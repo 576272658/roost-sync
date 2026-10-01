@@ -1,0 +1,88 @@
+.roost-note {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.roost-stats {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 16px;
+	margin: 8px 0 12px;
+}
+
+.roost-stat.roost-warn {
+	color: var(--text-warning);
+	font-weight: 600;
+}
+
+.roost-list ul {
+	max-height: 240px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+}
+
+.roost-asks .setting-item-name {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	word-break: break-all;
+}
+
+.roost-conflict-modal {
+	width: min(960px, 95vw);
+}
+
+.roost-conflict {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 8px 0;
+}
+
+.roost-conflict h4 {
+	margin: 4px 0;
+	word-break: break-all;
+}
+
+.roost-choice-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+
+.roost-diff {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.roost-diff-col {
+	flex: 1 1 280px;
+	min-width: 0;
+}
+
+.roost-diff-col pre {
+	max-height: 320px;
+	overflow: auto;
+	white-space: pre-wrap;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	padding: 6px;
+	border-radius: 4px;
+}
+
+.roost-diff-col img {
+	max-width: 100%;
+	max-height: 260px;
+}
+
+.roost-probe {
+	list-style: none;
+	padding-left: 0;
+}
+
+.roost-log {
+	max-height: 60vh;
+	overflow: auto;
+	white-space: pre-wrap;
+	font-size: var(--font-ui-smaller);
+}
