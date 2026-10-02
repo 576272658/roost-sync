@@ -3,7 +3,7 @@ import { L, setLanguage } from "./i18n";
 import { DEFAULT_CONFIG_SYNC, configDirMayContain, configFileAllowed, needsRestart } from "./sync/config";
 import { FileStateStore, VaultFs, obsidianTransport, platformName } from "./obsidian/adapters";
 import { DEFAULT_SETTINGS, RoostSettingTab, type RoostSettings } from "./settings";
-import { NotInitializedError, SyncEngine, type SyncResult, type SyncUI } from "./sync/engine";
+import { AlreadyInitializedError, NotInitializedError, SyncEngine, type SyncResult, type SyncUI } from "./sync/engine";
 import { LockBusyError, RemoteRepo } from "./sync/remote";
 import type { ConflictInfo } from "./sync/types";
 import { ConflictModal, InitModal, LogModal, PlanModal, ProbeModal } from "./ui/modals";
@@ -160,6 +160,7 @@ export default class RoostSyncPlugin extends Plugin {
 		let result: SyncResult | null = null;
 		let failure: string | null = null;
 		let busy = false;
+		let needsSetup = false;
 		try {
 			result = await this.buildEngine().sync({ dryRun });
 		} catch (e) {
@@ -168,9 +169,11 @@ export default class RoostSyncPlugin extends Plugin {
 				failure = L(`Another device is syncing (${e.holder}). Will retry shortly.`, `其他设备正在同步（${e.holder}），稍后自动重试。`);
 				if (trigger !== "conflict") window.setTimeout(() => this.sync(trigger === "manual" ? "manual" : "interval"), 20_000);
 			} else if (e instanceof NotInitializedError) {
+				// First device on an empty server: set it up right away (asks about server-only files).
+				needsSetup = true;
 				failure = L(
-					"The server is not initialized yet. Run “Initialize server from this device” on your most complete device.",
-					"服务器还没有初始化。请在最新、最完整的那台设备上执行「从本机初始化服务器」。",
+					"This server folder is not set up yet. Click “Sync now” to set it up from this device.",
+					"这个服务器目录还没有建立同步记录。点「立即同步」即可以本机为基准建立。",
 				);
 			} else {
 				failure = e instanceof Error ? e.message : String(e);
@@ -180,6 +183,7 @@ export default class RoostSyncPlugin extends Plugin {
 			this.running = false;
 		}
 
+		if (needsSetup && trigger === "manual" && !dryRun) return this.initServer();
 		const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 		if (failure) {
 			this.setStatus(L(`Roost: failed ${now}`, `Roost：同步失败 ${now}`));
@@ -291,20 +295,31 @@ export default class RoostSyncPlugin extends Plugin {
 		}
 		if (this.running) return;
 		this.running = true;
+		let alreadySetUp = false;
 		try {
 			const r = await this.buildEngine().initServer();
 			await this.log("manual", r.status === "cancelled" ? "cancelled" : "initialized", r);
-			if (r.status !== "cancelled") {
+			if (r.status === "cancelled") {
+				this.setStatus(L("Roost: cancelled", "Roost：已取消"));
+			} else {
+				const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 				new Notice(
-					L(`Roost Sync: server initialized. ${r.errors.length} error(s).`, `Roost Sync：服务器初始化完成。${r.errors.length} 个错误。`),
+					r.errors.length
+						? L(`Roost Sync: server set up; ${r.errors.length} file(s) failed (see “Show sync log”).`, `Roost Sync：同步记录已建立；${r.errors.length} 个文件失败（详见「查看同步日志」）。`)
+						: L("Roost Sync: server set up. Other devices can now just sync.", "Roost Sync：同步记录已建立，其他设备现在可以直接同步了。"),
+					10_000,
 				);
-				this.setStatus(L("Roost: initialized", "Roost：已初始化"));
+				this.setStatus(L(`Roost: synced ${now}`, `Roost：已同步 ${now}`));
 			}
 		} catch (e) {
-			new Notice(`Roost Sync: ${e instanceof Error ? e.message : String(e)}`, 10_000);
+			if (e instanceof AlreadyInitializedError) alreadySetUp = true;
+			else if (e instanceof LockBusyError) new Notice(L(`Roost Sync: another device is syncing (${e.holder}). Try again shortly.`, `Roost Sync：其他设备正在同步（${e.holder}），请稍后再试。`), 10_000);
+			else new Notice(`Roost Sync: ${e instanceof Error ? e.message : String(e)}`, 10_000);
 		} finally {
 			this.running = false;
 		}
+		// Someone else set the server up first: this device simply joins.
+		if (alreadySetUp) await this.sync("manual");
 	}
 
 	private async log(trigger: string, status: string, r: SyncResult | null, errors: string[] = []) {

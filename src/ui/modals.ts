@@ -132,11 +132,11 @@ export class InitModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		const { upload, identical, remoteOnly } = this.review;
-		this.titleEl.setText(L("Initialize server from this device", "从本机初始化服务器"));
+		this.titleEl.setText(L("First sync: set up the server from this device", "首次同步：以本机为基准建立同步记录"));
 		contentEl.createEl("p", {
 			text: L(
-				"This device becomes the reference copy. Other devices will then join and only ask about files that exist only on them.",
-				"本机将作为基准。之后其他设备加入时，只会询问那些只在它们上面存在的文件。",
+				"This server folder has no Roost Sync records yet. This device's notes and settings become the reference; this is needed only once, other devices then just sync.",
+				"这个服务器目录还没有 Roost Sync 的同步记录。本机的笔记和设置将作为基准，只需要做这一次，之后其他设备直接同步即可。",
 			),
 		});
 		contentEl.createEl("p", { text: L(`Already identical on server: ${identical.length}`, `服务器上已有且相同：${identical.length}`) });
@@ -157,7 +157,7 @@ export class InitModal extends Modal {
 			b.addButton((x) => x.setButtonText(L("Download them here", "下载到本机")).onClick(() => this.finish("download")));
 			b.addButton((x) => x.setButtonText(L("Move to server trash", "移到服务器回收站")).setCta().onClick(() => this.finish("trash")));
 		} else {
-			b.addButton((x) => x.setButtonText(L("Initialize", "初始化")).setCta().onClick(() => this.finish("trash")));
+			b.addButton((x) => x.setButtonText(L("Start syncing", "开始同步")).setCta().onClick(() => this.finish("trash")));
 		}
 	}
 

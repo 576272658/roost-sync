@@ -45,8 +45,8 @@ Do **not** copy `data.json` between devices. It holds that device's ID and passw
 
 1. On every device, enter the WebDAV address, username, password and a remote folder.
 2. Run **Test connection** to check that the server supports everything Roost Sync needs.
-3. On your most complete device, run **Initialize server from this device**.
-4. On the other devices, run **Sync now**.
+3. Run **Sync now**. The first device to sync with an empty server folder is asked to set it up: its files become the reference, and you decide what happens to files that exist only on the server. This happens once per server folder. Pick your most complete device for it.
+4. On the other devices, just run **Sync now**.
 
 Commands: Sync now, Show sync plan (dry run), Resolve conflicts, Test connection, Initialize server from this device, Show sync log.
 

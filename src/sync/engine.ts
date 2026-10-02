@@ -136,6 +136,12 @@ export interface SyncResult {
 	serverChanges: ServerChanges;
 }
 
+export class AlreadyInitializedError extends Error {
+	constructor() {
+		super(L("The server is already set up. Use “Sync now”.", "服务器已经建立了同步记录，请直接「立即同步」。"));
+	}
+}
+
 export class NotInitializedError extends Error {
 	constructor() {
 		super(L("The server has no Roost Sync data yet. Run “Initialize server from this device” on your most complete device first.", "服务器还没有初始化。请在最新、最完整的那台设备上执行「从本机初始化服务器」。"));
@@ -863,12 +869,14 @@ export class SyncEngine {
 		const ui = this.ui;
 		const { ignore, concurrency, device, maxFileSize } = this.settings;
 		const existing = await this.remote.fetchManifest();
-		if (existing.manifest) throw new Error(L("The server is already initialized. Use “Sync now” instead.", "服务器已经初始化过了，请直接用「立即同步」。"));
+		if (existing.manifest) throw new AlreadyInitializedError();
 
 		await this.dav.ensureRoot();
 		ui.progress(L("Waiting for sync lock…", "等待同步锁…"));
 		await this.remote.acquireLock();
 		try {
+			// Another device may have set the server up while we waited for the lock.
+			if ((await this.remote.fetchManifest()).manifest) throw new AlreadyInitializedError();
 			ui.progress(L("Listing server files…", "列出服务器文件…"));
 			const remoteList = (await this.dav.listTree("", (p) => ignore.isIgnoredDir(p))) ?? [];
 			const remote = new Map(remoteList.filter((e) => !ignore.isIgnored(e.path)).map((e) => [e.path, e]));

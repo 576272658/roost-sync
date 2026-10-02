@@ -473,3 +473,29 @@ describe.skipIf(!hasUvx)("renames and config sync", () => {
 		expect(phone.fs.text(".obsidian/community-plugins.json")).toBe("[]");
 	});
 });
+
+describe.skipIf(!hasUvx)("first sync on an empty server", () => {
+	it("two devices setting up at once: exactly one wins, the other can then just sync", async () => {
+		const server = await startWsgiDav();
+		try {
+			const folder = `vault-${randomId().slice(0, 8)}`;
+			const a = device(server.url, folder, "a");
+			const b = device(server.url, folder, "b");
+			a.fs.set("a.md", "A");
+			b.fs.set("b.md", "B");
+			const results = await Promise.allSettled([a.engine.initServer(), b.engine.initServer()]);
+			const ok = results.filter((r) => r.status === "fulfilled");
+			expect(ok).toHaveLength(1);
+			const loser = results[0].status === "fulfilled" ? b : a;
+			const winner = loser === a ? b : a;
+			loser.ui.answer = () => ({});
+			await loser.engine.sync();
+			await winner.engine.sync();
+			expect(a.fs.text("a.md")).toBe("A");
+			expect(a.fs.text("b.md")).toBe("B");
+			expect(b.fs.text("a.md")).toBe("A");
+		} finally {
+			server.stop();
+		}
+	}, 120_000);
+});
