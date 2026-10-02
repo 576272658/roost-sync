@@ -1,3 +1,4 @@
+import { L as say } from "../i18n";
 import type {
 	Action,
 	AskDecision,
@@ -18,11 +19,19 @@ export interface PlanInput {
 	skip: (path: string) => boolean;
 	decisions?: Record<string, AskDecision>;
 	resolutions?: Record<string, ConflictResolution>;
+	/**
+	 * Config files (.obsidian): conflicts are resolved automatically (newer wins; server
+	 * wins without history) and join-mode local-only files default to "delete here".
+	 */
+	isConfig?: (path: string) => boolean;
+	/** Pair deletions and additions with the same content into moves (§5.7). Default true. */
+	detectMoves?: boolean;
 }
 
 /** Decision table, design doc §5.4. Pure: no I/O. */
 export function planSync(input: PlanInput): Action[] {
 	const { local, base, manifest, joinMode, skip } = input;
+	const isConfig = input.isConfig ?? (() => false);
 	const decisions = input.decisions ?? {};
 	const resolutions = input.resolutions ?? {};
 	const files = manifest.files;
@@ -44,13 +53,29 @@ export function planSync(input: PlanInput): Action[] {
 		const R = files[path];
 		const T = R ? undefined : tombs[path];
 		const ctx = { path, local: L, base: B, remote: R, tomb: T };
+		/** Config files never wait for the user: keep the newer one, archive the other. */
+		const conflict = (reason: string): Action => {
+			if (!isConfig(path) || !L || !R) return { ...ctx, kind: "conflict", reason };
+			const keepLocal = !!B && L.mtime > R.mtime;
+			return keepLocal
+				? { ...ctx, kind: "push", reason: say("config conflict: this device is newer", "配置冲突：本机较新，保留本机"), archive: "remote", autoResolved: true }
+				: {
+						...ctx,
+						kind: "pull",
+						reason: B
+							? say("config conflict: server is newer", "配置冲突：服务器较新，保留服务器")
+							: say("config conflict without history: server kept", "配置冲突（无同步记录）：保留服务器"),
+						archive: "local",
+						autoResolved: true,
+					};
+		};
 
 		const res = resolutions[path];
 		if (L && R && res && res.remoteHash === R.hash && L.hash !== R.hash) {
 			actions.push(
 				res.choice === "local"
-					? { ...ctx, kind: "push", reason: "conflict resolved: keep this device", archive: "remote" }
-					: { ...ctx, kind: "pull", reason: "conflict resolved: keep server", archive: "local" },
+					? { ...ctx, kind: "push", reason: say("conflict resolved: keep this device", "冲突已处理：保留本机"), archive: "remote" }
+					: { ...ctx, kind: "pull", reason: say("conflict resolved: keep server", "冲突已处理：保留服务器"), archive: "local" },
 			);
 			continue;
 		}
@@ -58,8 +83,8 @@ export function planSync(input: PlanInput): Action[] {
 		const ask = (kind: Action["ask"], reason: string, def: AskDecision["choice"]): Action | null => {
 			const d = decisions[path];
 			if (L && d && d.hash === L.hash) {
-				if (d.choice === "push") return { ...ctx, kind: "push", reason: `${reason} → keep`, resurrect: !!T || kind === "resurrect", isNew: !R && !T && !B };
-				if (d.choice === "deleteLocal") return { ...ctx, kind: "deleteLocal", reason: `${reason} → delete` };
+				if (d.choice === "push") return { ...ctx, kind: "push", reason: `${reason} → ${say("keep", "保留")}`, resurrect: !!T || kind === "resurrect", isNew: !R && !T && !B };
+				if (d.choice === "deleteLocal") return { ...ctx, kind: "deleteLocal", reason: `${reason} → ${say("delete", "删除")}` };
 				return null; // "skip": leave both sides alone this run
 			}
 			return { ...ctx, kind: "ask", ask: kind, reason, defaultChoice: def };
@@ -70,35 +95,35 @@ export function planSync(input: PlanInput): Action[] {
 			const r = !R ? "deleted" : R.hash === B.hash ? "same" : "changed";
 			switch (`${l}/${r}`) {
 				case "same/same":
-					if (R!.rev !== B.rev) actions.push({ ...ctx, kind: "markSynced", reason: "unchanged" });
+					if (R!.rev !== B.rev) actions.push({ ...ctx, kind: "markSynced", reason: say("unchanged", "未变") });
 					break;
 				case "same/changed":
-					actions.push({ ...ctx, kind: "pull", reason: "changed on server" });
+					actions.push({ ...ctx, kind: "pull", reason: say("changed on server", "服务器上有修改") });
 					break;
 				case "same/deleted":
-					actions.push({ ...ctx, kind: "deleteLocal", reason: "deleted on server" });
+					actions.push({ ...ctx, kind: "deleteLocal", reason: say("deleted on server", "服务器上已删除") });
 					break;
 				case "changed/same":
-					actions.push({ ...ctx, kind: "push", reason: "changed here" });
+					actions.push({ ...ctx, kind: "push", reason: say("changed here", "本机有修改") });
 					break;
 				case "changed/changed":
 					actions.push(
 						L!.hash === R!.hash
-							? { ...ctx, kind: "markSynced", reason: "same change on both sides" }
-							: { ...ctx, kind: "conflict", reason: "changed on both sides" },
+							? { ...ctx, kind: "markSynced", reason: say("same change on both sides", "两边改成了相同内容") }
+							: conflict(say("changed on both sides", "两边都改了")),
 					);
 					break;
 				case "changed/deleted":
-					push(ask("resurrect", "changed here but deleted on server", "push"));
+					push(ask("resurrect", say("changed here but deleted on server", "本机改了，服务器上已删除"), "push"));
 					break;
 				case "deleted/same":
-					actions.push({ ...ctx, kind: "deleteRemote", reason: "deleted here" });
+					actions.push({ ...ctx, kind: "deleteRemote", reason: say("deleted here", "本机已删除") });
 					break;
 				case "deleted/changed":
-					actions.push({ ...ctx, kind: "pull", reason: "deleted here but changed on server" });
+					actions.push({ ...ctx, kind: "pull", reason: say("deleted here but changed on server", "本机删了，服务器上有修改") });
 					break;
 				case "deleted/deleted":
-					actions.push({ ...ctx, kind: "dropBase", reason: "deleted on both sides" });
+					actions.push({ ...ctx, kind: "dropBase", reason: say("deleted on both sides", "两边都已删除") });
 					break;
 			}
 			continue;
@@ -108,23 +133,82 @@ export function planSync(input: PlanInput): Action[] {
 		if (L && R) {
 			actions.push(
 				L.hash === R.hash
-					? { ...ctx, kind: "markSynced", reason: "identical on both sides" }
-					: { ...ctx, kind: "conflict", reason: "differs from server and no sync history" },
+					? { ...ctx, kind: "markSynced", reason: say("identical on both sides", "两边内容相同") }
+					: conflict(say("differs from server and no sync history", "和服务器不同，且没有同步记录")),
 			);
 		} else if (L && T) {
 			if (T.hash !== null && T.hash === L.hash) {
-				actions.push({ ...ctx, kind: "deleteLocal", reason: "deleted on another device (stale copy)" });
+				actions.push({ ...ctx, kind: "deleteLocal", reason: say("deleted on another device (stale copy)", "其他设备已删除（本机是旧副本）") });
 			} else {
-				push(ask("tombstoneDiffers", "deleted on server, local copy differs", "deleteLocal"));
+				push(ask("tombstoneDiffers", say("deleted on server, local copy differs", "服务器上已删除，本机这份内容不同"), "deleteLocal"));
 			}
 		} else if (L) {
-			if (joinMode) push(ask("joinLocalOnly", "only on this device (join mode)", "push"));
-			else actions.push({ ...ctx, kind: "push", reason: "new here", isNew: true });
+			if (joinMode) push(ask("joinLocalOnly", say("only on this device (join mode)", "只在本机存在（加入模式）"), isConfig(path) ? "deleteLocal" : "push"));
+			else actions.push({ ...ctx, kind: "push", reason: say("new here", "本机新建"), isNew: true });
 		} else if (R) {
-			actions.push({ ...ctx, kind: "pull", reason: "new on server" });
+			actions.push({ ...ctx, kind: "pull", reason: say("new on server", "服务器上新建") });
 		}
 	}
-	return actions;
+	return input.detectMoves === false ? actions : pairMoves(actions);
+}
+
+/**
+ * Rename detection (§5.7): a deletion and an addition with identical content in the same
+ * run become one move, so a renamed folder neither re-transfers files nor trips the
+ * threshold guard. Case-only renames are left as delete + add (safe on case-insensitive
+ * file systems, where moving `a.md` onto `A.md` would hit the same file).
+ */
+export function pairMoves(actions: Action[]): Action[] {
+	const out = [...actions];
+	const take = (from: Action[], to: Action[], make: (del: Action, add: Action) => Action) => {
+		const byHash = new Map<string, Action[]>();
+		for (const d of from) {
+			const h = d.kind === "deleteRemote" ? (d.remote?.hash ?? d.base?.hash) : d.local?.hash;
+			if (!h) continue;
+			const list = byHash.get(h);
+			if (list) list.push(d);
+			else byHash.set(h, [d]);
+		}
+		for (const add of to) {
+			const h = add.kind === "push" ? add.local?.hash : add.remote?.hash;
+			const cands = (h ? byHash.get(h) : undefined)?.filter((d) => d.path.toLowerCase() !== add.path.toLowerCase());
+			if (!cands?.length) continue;
+			const name = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+			const del = cands.find((d) => name(d.path) === name(add.path)) ?? cands[0];
+			byHash.get(h!)!.splice(byHash.get(h!)!.indexOf(del), 1);
+			out.splice(out.indexOf(del), 1);
+			out.splice(out.indexOf(add), 1, make(del, add));
+		}
+	};
+	// This device renamed: delete old on server + upload new → move on the server.
+	take(
+		out.filter((a) => a.kind === "deleteRemote"),
+		out.filter((a) => a.kind === "push" && a.isNew && a.local),
+		(del, add) => ({
+			path: add.path,
+			from: del.path,
+			kind: "moveRemote",
+			reason: say(`moved here from ${del.path}`, `本机从 ${del.path} 移动而来`),
+			local: add.local,
+			remote: del.remote,
+			base: del.base,
+		}),
+	);
+	// Renamed elsewhere: delete old here + download new → move locally.
+	take(
+		out.filter((a) => a.kind === "deleteLocal" && a.local),
+		out.filter((a) => a.kind === "pull" && !a.local && !a.archive && a.remote),
+		(del, add) => ({
+			path: add.path,
+			from: del.path,
+			kind: "moveLocal",
+			reason: say(`moved on server from ${del.path}`, `服务器上从 ${del.path} 移动而来`),
+			local: del.local,
+			remote: add.remote,
+			base: del.base,
+		}),
+	);
+	return out;
 }
 
 export interface PlanSummary {
@@ -137,12 +221,14 @@ export interface PlanSummary {
 	conflict: number;
 	ask: number;
 	markSynced: number;
+	/** Renames/moves (not counted as risky). */
+	move: number;
 	/** Deletions + resurrections + new pushes: what the threshold guard counts. */
 	risky: number;
 }
 
 export function summarize(actions: Action[]): PlanSummary {
-	const s: PlanSummary = { push: 0, pushNew: 0, pull: 0, deleteLocal: 0, deleteRemote: 0, resurrect: 0, conflict: 0, ask: 0, markSynced: 0, risky: 0 };
+	const s: PlanSummary = { push: 0, pushNew: 0, pull: 0, deleteLocal: 0, deleteRemote: 0, resurrect: 0, conflict: 0, ask: 0, markSynced: 0, move: 0, risky: 0 };
 	for (const a of actions) {
 		switch (a.kind) {
 			case "push":
@@ -156,6 +242,8 @@ export function summarize(actions: Action[]): PlanSummary {
 			case "conflict": s.conflict++; break;
 			case "ask": s.ask++; break;
 			case "markSynced": s.markSynced++; break;
+			case "moveRemote":
+			case "moveLocal": s.move++; break;
 		}
 	}
 	s.risky = s.deleteLocal + s.deleteRemote + s.resurrect + s.pushNew;

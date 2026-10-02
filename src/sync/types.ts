@@ -22,6 +22,8 @@ export interface Tombstone {
 	deletedAt: number;
 	rev: number;
 	by: string;
+	/** Set when the file was moved rather than deleted. */
+	movedTo?: string;
 }
 
 export interface Manifest {
@@ -93,10 +95,16 @@ export type ActionKind =
 	| "markSynced"
 	| "dropBase"
 	| "conflict"
-	| "ask";
+	| "ask"
+	/** Rename on the server (renamed on this device). */
+	| "moveRemote"
+	/** Rename on this device (renamed elsewhere). */
+	| "moveLocal";
 
 export interface Action {
 	path: string;
+	/** moveRemote / moveLocal: the old path. */
+	from?: string;
 	kind: ActionKind;
 	reason: string;
 	local?: FileMeta;
@@ -112,4 +120,6 @@ export interface Action {
 	ask?: AskKind;
 	/** For ask actions: what happens if the user just confirms. */
 	defaultChoice?: AskChoice;
+	/** A config-file conflict resolved without asking (newer wins). */
+	autoResolved?: boolean;
 }

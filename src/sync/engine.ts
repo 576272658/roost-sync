@@ -1,3 +1,4 @@
+import { L } from "../i18n";
 import { PreconditionFailedError, parentOf, type DavEntry } from "../webdav/client";
 import { sha256, randomId } from "../util/hash";
 import { IgnoreRules, caseCollisions, normalizePath, windowsNameProblem } from "../util/paths";
@@ -16,6 +17,7 @@ import type {
 	Manifest,
 } from "./types";
 import { SERVER_DIRECT } from "./types";
+import { isConfigPath } from "./config";
 
 // ---------- ports ----------
 
@@ -35,6 +37,8 @@ export interface LocalFs {
 	trash(path: string): Promise<void>;
 	/** Removes `dir` if it exists and is empty. */
 	removeEmptyDir(dir: string): Promise<boolean>;
+	/** Renames a file (creating the destination's folders). */
+	rename(from: string, to: string): Promise<void>;
 }
 
 export interface HashCacheEntry extends LocalStat {
@@ -107,6 +111,8 @@ export interface ServerChanges {
 	created: string[];
 	modified: string[];
 	deleted: string[];
+	/** "old → new" */
+	moved: string[];
 }
 
 interface Reconciled {
@@ -132,7 +138,7 @@ export interface SyncResult {
 
 export class NotInitializedError extends Error {
 	constructor() {
-		super("The server has no Roost Sync data yet. Run “Initialize server from this device” on your most complete device first.");
+		super(L("The server has no Roost Sync data yet. Run “Initialize server from this device” on your most complete device first.", "服务器还没有初始化。请在最新、最完整的那台设备上执行「从本机初始化服务器」。"));
 	}
 }
 
@@ -198,13 +204,13 @@ export class SyncEngine {
 			if (ignore.isIgnored(key)) continue;
 			if (out.actual[key] !== undefined) {
 				out.skipped.add(key);
-				out.errors.push(`${key}: two files with the same name in different Unicode forms; skipped`);
+				out.errors.push(L(`${key}: two files with the same name in different Unicode forms; skipped`, `${key}：有两个文件名相同但 Unicode 编码形式不同，已跳过`));
 				continue;
 			}
 			out.actual[key] = f.path;
 			if (f.size > maxFileSize) {
 				out.skipped.add(key);
-				out.errors.push(`${key}: ${(f.size / 1048576).toFixed(1)} MB exceeds the size limit; skipped`);
+				out.errors.push(L(`${key}: ${(f.size / 1048576).toFixed(1)} MB exceeds the size limit; skipped`, `${key}：${(f.size / 1048576).toFixed(1)} MB，超过大小限制，已跳过`));
 				continue;
 			}
 			const c = state.hashCache[key];
@@ -216,7 +222,7 @@ export class SyncEngine {
 				} catch {
 					// Deleted or replaced on disk after Obsidian listed it (e.g. by an external tool).
 					out.skipped.add(key);
-					out.warnings.push(`${key}: changed on disk while scanning; will sync next time`);
+					out.warnings.push(L(`${key}: changed on disk while scanning; will sync next time`, `${key}：扫描时文件正在变化，下次再同步`));
 					continue;
 				}
 			}
@@ -234,13 +240,13 @@ export class SyncEngine {
 			if (ignore.isIgnored(p) || scan.skipped.has(p)) continue;
 			if (f.size > maxFileSize && !scan.local[p]) {
 				scan.skipped.add(p);
-				scan.errors.push(`${p}: ${(f.size / 1048576).toFixed(1)} MB on server exceeds the size limit; not downloaded`);
+				scan.errors.push(L(`${p}: ${(f.size / 1048576).toFixed(1)} MB on server exceeds the size limit; not downloaded`, `${p}：服务器上 ${(f.size / 1048576).toFixed(1)} MB，超过大小限制，未下载`));
 			}
 			if (isWindows && !scan.local[p]) {
 				const why = windowsNameProblem(p);
 				if (why) {
 					scan.skipped.add(p);
-					scan.errors.push(`${p}: ${why}; cannot be saved on Windows, skipped`);
+					scan.errors.push(L(`${p}: ${why}; cannot be saved on Windows, skipped`, `${p}：${why}，Windows 上无法保存，已跳过`));
 				}
 			}
 		}
@@ -248,7 +254,7 @@ export class SyncEngine {
 			for (const p of Object.keys(scan.local)) {
 				if (!manifest.files[p] && !base[p]) {
 					const why = windowsNameProblem(p);
-					if (why) scan.warnings.push(`${p}: ${why}; your Windows device will not be able to sync it`);
+					if (why) scan.warnings.push(L(`${p}: ${why}; your Windows device will not be able to sync it`, `${p}：${why}，Windows 设备将无法同步这个文件`));
 				}
 			}
 		}
@@ -264,7 +270,7 @@ export class SyncEngine {
 				newLocal.some((a) => newRemote.some((b) => a !== b));
 			if (!clash) continue; // a case-only rename on one side; handled as delete + add
 			for (const k of group) scan.skipped.add(k);
-			scan.errors.push(`${group.join(" / ")}: names differ only in letter case; skipped until one is renamed`);
+			scan.errors.push(L(`${group.join(" / ")}: names differ only in letter case; skipped until one is renamed`, `${group.join(" / ")}：文件名只差大小写，重命名其中一个之前都会跳过`));
 		}
 	}
 
@@ -283,6 +289,7 @@ export class SyncEngine {
 			skip: (p) => scan.skipped.has(p) || this.settings.ignore.isIgnored(p),
 			decisions,
 			resolutions: state.resolutions,
+			isConfig: isConfigPath,
 		});
 	}
 
@@ -296,7 +303,7 @@ export class SyncEngine {
 	async sync(opts: { dryRun?: boolean } = {}): Promise<SyncResult> {
 		const ui = this.ui;
 		const state = await this.loadState();
-		ui.progress("Checking server…");
+		ui.progress(L("Checking server…", "检查服务器…"));
 		let fetched = await this.remote.fetchManifest(state.manifestCache ?? undefined);
 		if (!fetched.manifest) throw new NotInitializedError();
 		let manifest = fetched.manifest;
@@ -312,7 +319,7 @@ export class SyncEngine {
 		const recErrors: string[] = [];
 		let rec = await this.reconcile(manifest, recErrors);
 
-		ui.progress("Scanning vault…");
+		ui.progress(L("Scanning vault…", "扫描笔记库…"));
 		const scan = await this.scan(state);
 		this.applyRemoteChecks(scan, rec.manifest, state.base);
 
@@ -359,7 +366,7 @@ export class SyncEngine {
 		}
 		const approvedRisky = summarize(this.makePlan(state, scan, rec.manifest, joinMode, decisions)).risky;
 
-		ui.progress("Waiting for sync lock…");
+		ui.progress(L("Waiting for sync lock…", "等待同步锁…"));
 		await this.remote.acquireLock();
 		try {
 			// Re-read under the lock: another device may have synced since we planned.
@@ -475,13 +482,13 @@ export class SyncEngine {
 		const touchedLocalDirs = new Set<string>();
 		const touchedRemoteDirs = new Set<string>();
 		let done = 0;
-		const total = actions.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote"].includes(a.kind)).length;
-		const tick = () => ui.progress(`Syncing… ${++done}/${total}`);
+		const total = actions.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind)).length;
+		const tick = () => ui.progress(L(`Syncing… ${++done}/${total}`, `同步中… ${++done}/${total}`));
 
 		for (const a of localDeletes) {
 			try {
 				if (!(await unchangedSinceScan(a))) {
-					errors.push(`${a.path}: edited during sync; not deleted (will retry next sync)`);
+					errors.push(L(`${a.path}: edited during sync; not deleted (will retry next sync)`, `${a.path}：同步期间被修改，未删除（下次同步再处理）`));
 					continue;
 				}
 				await this.fs.trash(localPath(a.path));
@@ -507,11 +514,55 @@ export class SyncEngine {
 				dirty = true;
 				touchedRemoteDirs.add(parentOf(a.path));
 			} catch (e) {
-				if (e instanceof PreconditionFailedError) errors.push(`${a.path}: changed on the server during sync; not deleted (will be picked up next sync)`);
+				if (e instanceof PreconditionFailedError) errors.push(L(`${a.path}: changed on the server during sync; not deleted (will be picked up next sync)`, `${a.path}：同步期间服务器上的文件被改动，未删除（下次同步处理）`));
 				else fail(a, e);
 			}
 			tick();
 		});
+
+		// 1b. Moves (§5.7): rename instead of delete + re-transfer.
+		for (const a of actions.filter((x) => x.kind === "moveRemote")) {
+			const from = a.from!;
+			try {
+				const R = a.remote!;
+				const moved = await this.dav.move(from, a.path, false, this.guardEtag(a));
+				if (!moved) throw new Error(L("source missing on the server", "服务器上找不到原文件"));
+				next.files[a.path] = { ...R, rev: newRev, by: device.name };
+				delete next.files[from];
+				delete next.tombstones[a.path];
+				next.tombstones[from] = { hash: R.hash, deletedAt: Date.now(), rev: newRev, by: device.name, movedTo: a.path };
+				delete base[from];
+				base[a.path] = { hash: R.hash, rev: newRev };
+				delete state.hashCache[from];
+				dirty = true;
+				touchedRemoteDirs.add(parentOf(from));
+			} catch (e) {
+				if (e instanceof PreconditionFailedError) {
+					errors.push(L(`${from} → ${a.path}: changed on the server during sync; not moved (will be picked up next sync)`, `${from} → ${a.path}：同步期间服务器上的文件被改动，未移动（下次同步处理）`));
+				} else fail(a, e);
+			}
+			tick();
+		}
+		for (const a of actions.filter((x) => x.kind === "moveLocal")) {
+			const from = a.from!;
+			try {
+				const lpFrom = localPath(from);
+				if (!(await unchangedSinceScan({ ...a, path: from })) || (await this.fs.stat(a.path)) !== null) {
+					errors.push(L(`${from}: edited during sync; not moved (will retry next sync)`, `${from}：同步期间被修改，未移动（下次同步再处理）`));
+					continue;
+				}
+				await this.fs.rename(lpFrom, a.path);
+				const st = await this.fs.stat(a.path);
+				delete base[from];
+				base[a.path] = { hash: a.remote!.hash, rev: a.remote!.rev };
+				delete state.hashCache[from];
+				if (st) state.hashCache[a.path] = { ...st, hash: a.remote!.hash };
+				touchedLocalDirs.add(parentOf(lpFrom));
+			} catch (e) {
+				fail(a, e);
+			}
+			tick();
+		}
 
 		// 2. Transfers.
 		const transfers = actions.filter((a) => a.kind === "push" || a.kind === "pull");
@@ -528,7 +579,7 @@ export class SyncEngine {
 				if (a.kind === "push") await this.doPush(a, localPath(a.path), next, base, state, newRev, stamp);
 				else {
 					if (!(await unchangedSinceScan(a))) {
-						errors.push(`${a.path}: edited during sync; not overwritten (will retry next sync)`);
+						errors.push(L(`${a.path}: edited during sync; not overwritten (will retry next sync)`, `${a.path}：同步期间被修改，未覆盖（下次同步再处理）`));
 						return;
 					}
 					await this.doPull(a, localPath(a.path), next, base, state, newRev, stamp);
@@ -539,7 +590,7 @@ export class SyncEngine {
 				}
 				dirty = dirty || a.kind === "push" || next.files[a.path] !== manifest.files[a.path];
 			} catch (e) {
-				if (e instanceof PreconditionFailedError) errors.push(`${a.path}: changed on the server during sync; not uploaded (will be picked up next sync)`);
+				if (e instanceof PreconditionFailedError) errors.push(L(`${a.path}: changed on the server during sync; not uploaded (will be picked up next sync)`, `${a.path}：同步期间服务器上的文件被改动，未上传（下次同步处理）`));
 				else fail(a, e);
 			} finally {
 				tick();
@@ -558,7 +609,7 @@ export class SyncEngine {
 		if (now - state.lastPruneAt > DAY) {
 			const removed = this.gcTombstones(next, devices, dirty ? newRev : manifest.rev);
 			if (removed > 0) dirty = true;
-			await this.remote.pruneArchives(this.settings.archiveDays).catch((e) => errors.push(`cleanup: ${e}`));
+			await this.remote.pruneArchives(this.settings.archiveDays).catch((e) => errors.push(L(`cleanup: ${e}`, `清理：${e}`)));
 			state.lastPruneAt = now;
 		}
 
@@ -611,7 +662,7 @@ export class SyncEngine {
 	private async doPull(a: Action, lp: string, next: Manifest, base: Record<string, BaseEntry>, state: LocalState, newRev: number, stamp: string) {
 		const R = a.remote!;
 		const got = await this.dav.get(a.path);
-		if (got.status !== 200) throw new Error("listed in the manifest but missing on the server");
+		if (got.status !== 200) throw new Error(L("listed in the manifest but missing on the server", "清单里有，但服务器上找不到这个文件"));
 		const data = got.data!;
 		const hash = await sha256(data);
 		if (a.archive === "local" && a.local) {
@@ -696,31 +747,56 @@ export class SyncEngine {
 	 * Pure with respect to the server: nothing is written here.
 	 */
 	async reconcile(manifest: Manifest, errors: string[]): Promise<Reconciled> {
-		const changes: ServerChanges = { created: [], modified: [], deleted: [] };
+		const changes: ServerChanges = { created: [], modified: [], deleted: [], moved: [] };
 		if (!this.settings.detectServerChanges) return { manifest, dirty: false, changes };
 		const { ignore, maxFileSize, concurrency } = this.settings;
-		this.ui.progress("Checking server folder…");
-		const listing = await this.dav.listTree("", (p) => ignore.isIgnored(p));
-		if (listing === null) throw new Error("The remote folder no longer exists on the server. Check the remote folder setting.");
+		this.ui.progress(L("Checking server folder…", "核对服务器目录…"));
+		const listing = await this.dav.listTree("", (p) => ignore.isIgnoredDir(p));
+		if (listing === null) throw new Error(L("The remote folder no longer exists on the server. Check the remote folder setting.", "服务器上找不到远端目录，请检查「远端目录」设置。"));
 		const onServer = new Map<string, DavEntry>();
 		for (const e of listing) if (!ignore.isIgnored(e.path)) onServer.set(e.path, e);
 
 		const known = Object.keys(manifest.files).filter((p) => !ignore.isIgnored(p));
 		if (onServer.size === 0 && known.length >= 5) {
 			throw new Error(
-				`The server folder looks empty but the manifest lists ${known.length} files. Refusing to treat them all as deleted; check the server.`,
+				L(
+					`The server folder looks empty but the manifest lists ${known.length} files. Refusing to treat them all as deleted; check the server.`,
+					`服务器目录看起来是空的，但清单里有 ${known.length} 个文件。为安全起见拒绝把它们全部当成已删除，请检查服务器。`,
+				),
 			);
 		}
 
 		const next: Manifest = { ...manifest, files: { ...manifest.files }, tombstones: { ...manifest.tombstones } };
 		const rev = manifest.rev + 1;
 		let dirty = false;
+
+		// Renamed on the server (mv keeps inode and mtime, so WsgiDAV's ETag is unchanged):
+		// a vanished entry and a new file with the same ETag and size are one move, no download.
+		const vanishedByEtag = new Map<string, string>();
+		for (const p of known) {
+			const m = manifest.files[p];
+			if (!onServer.has(p) && m.etag) vanishedByEtag.set(`${m.etag}|${m.size}`, p);
+		}
+		const movedTo = new Map<string, string>();
+		for (const e of onServer.values()) {
+			if (manifest.files[e.path] || !e.etag) continue;
+			const from = vanishedByEtag.get(`${e.etag}|${e.size}`);
+			if (!from || movedTo.has(from)) continue;
+			movedTo.set(from, e.path);
+			next.files[e.path] = { ...manifest.files[from], rev, by: SERVER_DIRECT, mtime: e.mtime || manifest.files[from].mtime };
+			delete next.tombstones[e.path];
+			changes.moved.push(`${from} → ${e.path}`);
+			dirty = true;
+		}
+		const movedDest = new Set(movedTo.values());
+
 		const toCheck: DavEntry[] = [];
 		for (const e of onServer.values()) {
+			if (movedDest.has(e.path)) continue;
 			const m = manifest.files[e.path];
 			if (m && m.etag && e.etag && m.etag === e.etag) continue;
 			if (!m && e.size > maxFileSize) {
-				errors.push(`${e.path}: ${(e.size / 1048576).toFixed(1)} MB on server exceeds the size limit; not added`);
+				errors.push(L(`${e.path}: ${(e.size / 1048576).toFixed(1)} MB on server exceeds the size limit; not added`, `${e.path}：服务器上 ${(e.size / 1048576).toFixed(1)} MB，超过大小限制，未加入`));
 				continue;
 			}
 			if (m && !e.etag && m.size === e.size) continue; // server without ETags: size is all we have
@@ -751,9 +827,9 @@ export class SyncEngine {
 
 		for (const p of known) {
 			if (onServer.has(p)) continue;
-			next.tombstones[p] = { hash: manifest.files[p].hash, deletedAt: Date.now(), rev, by: SERVER_DIRECT };
+			next.tombstones[p] = { hash: manifest.files[p].hash, deletedAt: Date.now(), rev, by: SERVER_DIRECT, movedTo: movedTo.get(p) };
 			delete next.files[p];
-			changes.deleted.push(p);
+			if (!movedTo.has(p)) changes.deleted.push(p);
 			dirty = true;
 		}
 		for (const k of Object.values(changes)) k.sort();
@@ -787,20 +863,20 @@ export class SyncEngine {
 		const ui = this.ui;
 		const { ignore, concurrency, device, maxFileSize } = this.settings;
 		const existing = await this.remote.fetchManifest();
-		if (existing.manifest) throw new Error("The server is already initialized. Use “Sync now” instead.");
+		if (existing.manifest) throw new Error(L("The server is already initialized. Use “Sync now” instead.", "服务器已经初始化过了，请直接用「立即同步」。"));
 
 		await this.dav.ensureRoot();
-		ui.progress("Waiting for sync lock…");
+		ui.progress(L("Waiting for sync lock…", "等待同步锁…"));
 		await this.remote.acquireLock();
 		try {
-			ui.progress("Listing server files…");
-			const remoteList = (await this.dav.listTree("", (p) => ignore.isIgnored(p))) ?? [];
+			ui.progress(L("Listing server files…", "列出服务器文件…"));
+			const remoteList = (await this.dav.listTree("", (p) => ignore.isIgnoredDir(p))) ?? [];
 			const remote = new Map(remoteList.filter((e) => !ignore.isIgnored(e.path)).map((e) => [e.path, e]));
 			const state = emptyState();
-			ui.progress("Scanning vault…");
+			ui.progress(L("Scanning vault…", "扫描笔记库…"));
 			const scan = await this.scan(state);
 
-			ui.progress("Comparing with server…");
+			ui.progress(L("Comparing with server…", "和服务器比对…"));
 			const upload: string[] = [];
 			const identical: string[] = [];
 			await runPool(Object.keys(scan.local), concurrency, async (p) => {
@@ -836,12 +912,12 @@ export class SyncEngine {
 					const data = await this.fs.read(scan.actual[p]);
 					await this.dav.ensureDir(parentOf(p));
 					const put = await this.dav.putEx(p, data);
-					if (put.status !== "ok") throw new Error("upload rejected");
+					if (put.status !== "ok") throw new Error(L("upload rejected", "上传被拒绝"));
 					m.files[p] = { hash: await sha256(data), size: data.byteLength, mtime: scan.local[p].mtime, rev: 1, by: device.name, etag: put.etag };
 				} catch (e) {
 					errors.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
 				}
-				ui.progress(`Initializing… ${++done}/${total}`);
+				ui.progress(L(`Initializing… ${++done}/${total}`, `初始化中… ${++done}/${total}`));
 			});
 			await runPool(remoteOnly, concurrency, async (p) => {
 				try {
@@ -859,7 +935,7 @@ export class SyncEngine {
 				} catch (e) {
 					errors.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
 				}
-				ui.progress(`Initializing… ${++done}/${total}`);
+				ui.progress(L(`Initializing… ${++done}/${total}`, `初始化中… ${++done}/${total}`));
 			});
 
 			const etag = await this.remote.commitManifest(m, null);
@@ -890,7 +966,7 @@ export class SyncEngine {
 	}
 }
 
-const noChanges = (): ServerChanges => ({ created: [], modified: [], deleted: [] });
+const noChanges = (): ServerChanges => ({ created: [], modified: [], deleted: [], moved: [] });
 
 function sortDeepestFirst(dirs: Set<string>): string[] {
 	return [...dirs].filter(Boolean).sort((a, b) => b.split("/").length - a.split("/").length);

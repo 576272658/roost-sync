@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_IGNORES, IgnoreRules, caseCollisions, windowsNameProblem } from "../src/util/paths";
+import { DEFAULT_CONFIG_SYNC } from "../src/sync/config";
 
 describe("IgnoreRules", () => {
 	const r = new IgnoreRules([...DEFAULT_IGNORES, "Templates/", "attachments/*.psd", "/^tmp-\\d+/"]);
@@ -37,4 +38,43 @@ describe("windowsNameProblem", () => {
 
 it("caseCollisions", () => {
 	expect(caseCollisions(["A.md", "a.md", "b.md"])).toEqual([["A.md", "a.md"]]);
+});
+
+describe("config folder rules", () => {
+	const r = new IgnoreRules([...DEFAULT_IGNORES, ".obsidian/plugins/secret-plugin/"], DEFAULT_CONFIG_SYNC);
+	it.each([
+		[".obsidian/app.json", false],
+		[".obsidian/community-plugins.json", false],
+		[".obsidian/daily-notes.json", false],
+		[".obsidian/plugins/dataview/main.js", false],
+		[".obsidian/plugins/dataview/data.json", false],
+		[".obsidian/themes/Minimal/theme.css", false],
+		[".obsidian/snippets/my.css", false],
+		[".obsidian/workspace.json", true],
+		[".obsidian/workspace-mobile.json", true],
+		[".obsidian/graph.json", true],
+		[".obsidian/plugins/roost-sync/data.json", true],
+		[".obsidian/plugins/roost-sync/state/base.json", true],
+		[".obsidian/plugins/remotely-save/data.json", true],
+		[".obsidian/plugins/secret-plugin/data.json", true],
+		[".obsidian/workspace.sync-conflict-1.json", true],
+		[".obsidian/cache/x", true],
+		[".trash/a.md", true],
+		[".sync/manifest.json", true],
+	])("%s → ignored=%s", (p, expected) => {
+		expect(r.isIgnored(p)).toBe(expected);
+	});
+
+	it("prunes directory listings", () => {
+		expect(r.isIgnoredDir(".obsidian")).toBe(false);
+		expect(r.isIgnoredDir(".obsidian/plugins")).toBe(false);
+		expect(r.isIgnoredDir(".obsidian/plugins/roost-sync")).toBe(true);
+		expect(r.isIgnoredDir(".obsidian/plugins/secret-plugin")).toBe(true);
+		expect(r.isIgnoredDir(".sync")).toBe(true);
+	});
+
+	it("config sync off ignores the whole folder", () => {
+		expect(new IgnoreRules(DEFAULT_IGNORES, null).isIgnored(".obsidian/app.json")).toBe(true);
+		expect(new IgnoreRules(DEFAULT_IGNORES, { ...DEFAULT_CONFIG_SYNC, enabled: false }).isIgnored(".obsidian/app.json")).toBe(true);
+	});
 });

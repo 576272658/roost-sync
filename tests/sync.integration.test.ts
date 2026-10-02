@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomId } from "../src/util/hash";
@@ -277,7 +277,7 @@ describe.skipIf(!hasUvx)("server folder edited directly (AI agent) — reconcili
 		agentWrite("notes/a.md", "A edited by agent");
 		unlinkSync(disk("notes/b.md"));
 		const r = await phone.engine.sync();
-		expect(r.serverChanges).toEqual({ created: ["agent/new 笔记.md"], modified: ["notes/a.md"], deleted: ["notes/b.md"] });
+		expect(r.serverChanges).toEqual({ created: ["agent/new 笔记.md"], modified: ["notes/a.md"], deleted: ["notes/b.md"], moved: [] });
 		expect(phone.fs.text("agent/new 笔记.md")).toBe("written by agent");
 		expect(phone.fs.text("notes/a.md")).toBe("A edited by agent");
 		expect(phone.fs.text("notes/b.md")).toBeUndefined();
@@ -317,7 +317,7 @@ describe.skipIf(!hasUvx)("server folder edited directly (AI agent) — reconcili
 		await phone.engine.sync();
 		const r = await phone.engine.sync();
 		expect(r.status).toBe("nothing-to-do");
-		expect(r.serverChanges).toEqual({ created: [], modified: [], deleted: [] });
+		expect(r.serverChanges).toEqual({ created: [], modified: [], deleted: [], moved: [] });
 	});
 
 	it("agent and a device editing the same note → conflict, nothing overwritten", async () => {
@@ -371,5 +371,105 @@ describe.skipIf(!hasUvx)("server folder edited directly (AI agent) — reconcili
 		agentWrite("agent.md", "x");
 		const r = await phone.engine.sync();
 		expect(r.status).toBe("nothing-to-do");
+	});
+});
+
+describe.skipIf(!hasUvx)("renames and config sync", () => {
+	let server: Awaited<ReturnType<typeof startWsgiDav>>;
+	let folder: string;
+	const disk = (rel: string) => join(server.root, folder, rel);
+
+	beforeAll(async () => {
+		server = await startWsgiDav();
+	}, 120_000);
+	afterAll(() => server?.stop());
+	beforeEach(() => {
+		folder = `vault-${randomId().slice(0, 8)}`;
+	});
+
+	async function setup(config = false) {
+		const mac = device(server.url, folder, "mac", { config });
+		for (let i = 0; i < 20; i++) mac.fs.set(`projects/${i}.md`, `note ${i}`);
+		mac.fs.set("keep.md", "K");
+		if (config) {
+			mac.fs.set(".obsidian/app.json", '{"a":1}');
+			mac.fs.set(".obsidian/community-plugins.json", '["dataview"]');
+			mac.fs.set(".obsidian/plugins/dataview/main.js", "code");
+			mac.fs.set(".obsidian/plugins/dataview/data.json", '{"x":1}');
+			mac.fs.set(".obsidian/plugins/roost-sync/data.json", '{"password":"secret"}');
+			mac.fs.set(".obsidian/workspace.json", "{}");
+		}
+		await mac.engine.initServer();
+		const phone = device(server.url, folder, "phone", { config });
+		await phone.engine.sync();
+		return { mac, phone };
+	}
+
+	it("renaming a folder of 20 notes moves them on the server and on other devices, without a preview", async () => {
+		const { mac, phone } = await setup();
+		for (let i = 0; i < 20; i++) {
+			mac.fs.remove(`projects/${i}.md`);
+			mac.fs.set(`archive/2026/${i}.md`, `note ${i}`);
+		}
+		const r = await mac.engine.sync();
+		expect(r.summary).toMatchObject({ move: 20, push: 0, deleteRemote: 0 });
+		expect(mac.ui.reviews).toHaveLength(0);
+		expect(existsSync(disk("archive/2026/7.md"))).toBe(true);
+		expect(existsSync(disk("projects"))).toBe(false); // emptied folder removed
+		const r2 = await phone.engine.sync();
+		expect(r2.summary).toMatchObject({ move: 20, pull: 0, deleteLocal: 0 });
+		expect(phone.ui.reviews).toHaveLength(0);
+		expect(phone.fs.text("archive/2026/7.md")).toBe("note 7");
+		expect(phone.fs.text("projects/7.md")).toBeUndefined();
+		expect(phone.fs.trashed).toEqual([]);
+	});
+
+	it("agent renaming a folder on the server is detected by ETag, without downloading", async () => {
+		const { mac, phone } = await setup();
+		renameSync(disk("projects"), disk("done"));
+		const r = await phone.engine.sync();
+		expect(r.serverChanges.moved).toHaveLength(20);
+		expect(r.serverChanges.created).toEqual([]);
+		expect(r.serverChanges.deleted).toEqual([]);
+		expect(r.summary).toMatchObject({ move: 20, pull: 0 });
+		expect(phone.fs.text("done/3.md")).toBe("note 3");
+		await mac.engine.sync();
+		expect(mac.fs.text("done/3.md")).toBe("note 3");
+		expect(mac.fs.text("projects/3.md")).toBeUndefined();
+	});
+
+	it("config folder: plugins and settings sync; workspace and Roost Sync's own folder never do", async () => {
+		const { phone } = await setup(true);
+		expect(phone.fs.text(".obsidian/app.json")).toBe('{"a":1}');
+		expect(phone.fs.text(".obsidian/plugins/dataview/main.js")).toBe("code");
+		expect(phone.fs.text(".obsidian/plugins/dataview/data.json")).toBe('{"x":1}');
+		expect(phone.fs.text(".obsidian/plugins/roost-sync/data.json")).toBeUndefined();
+		expect(phone.fs.text(".obsidian/workspace.json")).toBeUndefined();
+		expect(existsSync(disk(".obsidian/plugins/roost-sync"))).toBe(false);
+	});
+
+	it("config conflict is resolved automatically: newer wins, older archived", async () => {
+		const { mac, phone } = await setup(true);
+		mac.fs.set(".obsidian/app.json", '{"a":"mac"}');
+		await mac.engine.sync();
+		phone.fs.set(".obsidian/app.json", '{"a":"phone, edited later"}');
+		const r = await phone.engine.sync();
+		expect(r.conflicts).toEqual([]);
+		expect(r.actions.find((a) => a.path === ".obsidian/app.json")).toMatchObject({ kind: "push", autoResolved: true });
+		await mac.engine.sync();
+		expect(mac.fs.text(".obsidian/app.json")).toBe('{"a":"phone, edited later"}');
+		const archived = await phone.dav.walk(".sync/conflicts");
+		expect(archived.some((e) => e.path.endsWith(".obsidian/app.json"))).toBe(true);
+	});
+
+	it("uninstalling a plugin on one device removes it elsewhere", async () => {
+		const { mac, phone } = await setup(true);
+		mac.fs.remove(".obsidian/plugins/dataview/main.js");
+		mac.fs.remove(".obsidian/plugins/dataview/data.json");
+		mac.fs.set(".obsidian/community-plugins.json", "[]");
+		await mac.engine.sync();
+		await phone.engine.sync();
+		expect(phone.fs.text(".obsidian/plugins/dataview/main.js")).toBeUndefined();
+		expect(phone.fs.text(".obsidian/community-plugins.json")).toBe("[]");
 	});
 });

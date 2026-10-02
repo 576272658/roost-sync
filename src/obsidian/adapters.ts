@@ -2,6 +2,7 @@ import { Platform, TFile, TFolder, normalizePath as obsNormalize, requestUrl, ty
 import type { LocalFs, LocalState, LocalStat, StateStore } from "../sync/engine";
 import { lowerCaseHeaders, type HttpTransport } from "../webdav/transport";
 import { parentOf } from "../webdav/client";
+import { CONFIG_DIR, isConfigPath } from "../sync/config";
 
 export const obsidianTransport: HttpTransport = async (req) => {
 	const headers = { ...(req.headers ?? {}) };
@@ -26,30 +27,81 @@ export const obsidianTransport: HttpTransport = async (req) => {
 	};
 };
 
-/** Vault files via the Vault API, so Obsidian's caches stay consistent on every platform. */
+/**
+ * Vault files via the Vault API, so Obsidian's caches stay consistent on every platform.
+ * Config files (hidden from the Vault API) go through the adapter. Paths given to and
+ * returned by this class are canonical: the config folder is always ".obsidian", mapped
+ * to this device's `vault.configDir`.
+ */
 export class VaultFs implements LocalFs {
-	constructor(private app: App) {}
+	constructor(
+		private app: App,
+		/** Which canonical config paths to list; null = config sync off. */
+		private configFilter: { file: (p: string) => boolean; dir: (p: string) => boolean } | null,
+	) {}
+
+	private get configDir() {
+		return this.app.vault.configDir;
+	}
+
+	private actual(p: string): string {
+		return isConfigPath(p) ? this.configDir + p.slice(CONFIG_DIR.length) : p;
+	}
+
+	private canonical(p: string): string {
+		const cd = this.configDir;
+		return p === cd || p.startsWith(cd + "/") ? CONFIG_DIR + p.slice(cd.length) : p;
+	}
 
 	async list() {
-		return this.app.vault.getFiles().map((f) => ({ path: f.path, mtime: f.stat.mtime, size: f.stat.size }));
+		const out = this.app.vault.getFiles().map((f) => ({ path: f.path, mtime: f.stat.mtime, size: f.stat.size }));
+		if (this.configFilter) out.push(...(await this.listConfig(CONFIG_DIR)));
+		return out;
+	}
+
+	private async listConfig(dir: string): Promise<{ path: string; mtime: number; size: number }[]> {
+		const f = this.configFilter!;
+		const a = this.app.vault.adapter;
+		const out: { path: string; mtime: number; size: number }[] = [];
+		let listed;
+		try {
+			listed = await a.list(this.actual(dir));
+		} catch {
+			return out;
+		}
+		for (const file of listed.files) {
+			const p = this.canonical(file);
+			if (!f.file(p)) continue;
+			const st = await a.stat(file);
+			if (st?.type === "file") out.push({ path: p, mtime: st.mtime, size: st.size });
+		}
+		for (const sub of listed.folders) {
+			const p = this.canonical(sub);
+			if (f.dir(p)) out.push(...(await this.listConfig(p)));
+		}
+		return out;
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {
-		return this.app.vault.adapter.readBinary(path);
+		return this.app.vault.adapter.readBinary(this.actual(path));
 	}
 
 	async write(path: string, data: ArrayBuffer, mtime?: number): Promise<LocalStat> {
 		const vault = this.app.vault;
 		const opts = mtime ? { mtime } : undefined;
-		const existing = vault.getAbstractFileByPath(path);
-		if (existing instanceof TFile) {
-			await vault.modifyBinary(existing, data, opts);
+		if (isConfigPath(path)) {
+			await this.ensureAdapterFolder(parentOf(this.actual(path)));
+			await vault.adapter.writeBinary(this.actual(path), data, opts);
 		} else {
-			await this.ensureFolder(parentOf(path));
-			await vault.createBinary(path, data, opts);
+			const existing = vault.getAbstractFileByPath(path);
+			if (existing instanceof TFile) {
+				await vault.modifyBinary(existing, data, opts);
+			} else {
+				await this.ensureFolder(parentOf(path));
+				await vault.createBinary(path, data, opts);
+			}
 		}
-		const st = (await this.stat(path))!;
-		return st;
+		return (await this.stat(path))!;
 	}
 
 	private async ensureFolder(dir: string) {
@@ -65,29 +117,60 @@ export class VaultFs implements LocalFs {
 		}
 	}
 
+	private async ensureAdapterFolder(dir: string) {
+		if (!dir) return;
+		const a = this.app.vault.adapter;
+		if (await a.exists(dir)) return;
+		await this.ensureAdapterFolder(parentOf(dir));
+		try {
+			await a.mkdir(dir);
+		} catch {
+			/* created concurrently */
+		}
+	}
+
 	/** Reads the disk, not Obsidian's cache, which can lag behind external edits. */
 	async stat(path: string): Promise<LocalStat | null> {
-		const st = await this.app.vault.adapter.stat(path);
+		const st = await this.app.vault.adapter.stat(this.actual(path));
 		return st && st.type === "file" ? { mtime: st.mtime, size: st.size } : null;
 	}
 
 	async trash(path: string): Promise<void> {
-		const f = this.app.vault.getAbstractFileByPath(path);
+		const f = isConfigPath(path) ? null : this.app.vault.getAbstractFileByPath(path);
 		if (f) {
 			// system=true: OS trash on desktop; Obsidian falls back to the vault's .trash/ (mobile).
 			await this.app.vault.trash(f, true);
 			return;
 		}
 		const adapter = this.app.vault.adapter;
-		if (!(await adapter.trashSystem(path))) await adapter.trashLocal(path);
+		if (!(await adapter.trashSystem(this.actual(path)))) await adapter.trashLocal(this.actual(path));
+	}
+
+	async rename(from: string, to: string): Promise<void> {
+		const vault = this.app.vault;
+		const f = isConfigPath(from) ? null : vault.getAbstractFileByPath(from);
+		if (f instanceof TFile && !isConfigPath(to)) {
+			await this.ensureFolder(parentOf(to));
+			// Plain rename: links were already updated on the device that did the rename.
+			await vault.rename(f, to);
+			return;
+		}
+		await this.ensureAdapterFolder(parentOf(this.actual(to)));
+		await vault.adapter.rename(this.actual(from), this.actual(to));
 	}
 
 	async removeEmptyDir(dir: string): Promise<boolean> {
-		const f = this.app.vault.getAbstractFileByPath(dir);
-		if (!(f instanceof TFolder) || f.children.length > 0) return false;
-		const listed = await this.app.vault.adapter.list(dir);
+		const a = this.app.vault.adapter;
+		if (isConfigPath(dir)) {
+			// Keep .obsidian and its top-level folders (plugins/, themes/, snippets/).
+			if (dir.split("/").length <= 2) return false;
+		} else {
+			const f = this.app.vault.getAbstractFileByPath(dir);
+			if (!(f instanceof TFolder) || f.children.length > 0) return false;
+		}
+		const listed = await a.list(this.actual(dir));
 		if (listed.files.length > 0 || listed.folders.length > 0) return false; // hidden files
-		await this.app.vault.adapter.rmdir(dir, false);
+		await a.rmdir(this.actual(dir), false);
 		return true;
 	}
 }

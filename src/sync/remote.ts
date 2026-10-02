@@ -1,3 +1,4 @@
+import { L } from "../i18n";
 import { WebDavClient } from "../webdav/client";
 import { randomId } from "../util/hash";
 import { sleep } from "../util/pool";
@@ -12,13 +13,13 @@ export const CONFLICTS_DIR = `${SYNC_DIR}/conflicts`;
 
 export class LockBusyError extends Error {
 	constructor(public holder: string, public expiresAt: number) {
-		super(`"${holder}" is syncing right now (lock expires ${new Date(expiresAt).toLocaleTimeString()})`);
+		super(L(`"${holder}" is syncing right now (lock expires ${new Date(expiresAt).toLocaleTimeString()})`, `「${holder}」正在同步（锁 ${new Date(expiresAt).toLocaleTimeString()} 过期）`));
 	}
 }
 
 export class ConcurrentUpdateError extends Error {
 	constructor() {
-		super("The manifest was changed by another device during this sync. Nothing was lost; sync again.");
+		super(L("The manifest was changed by another device during this sync. Nothing was lost; sync again.", "同步期间清单被其他设备改动了。没有丢失任何内容，请再同步一次。"));
 	}
 }
 
@@ -68,7 +69,7 @@ export class RemoteRepo {
 		if (r.status === 304) return this.fetchManifest();
 		const m = dec<Manifest>(r.data!);
 		if (m.version !== 1 || typeof m.rev !== "number" || !m.files || !m.tombstones) {
-			throw new Error("Server manifest is not in a format this version of Roost Sync understands.");
+			throw new Error(L("Server manifest is not in a format this version of Roost Sync understands.", "服务器上的清单格式无法识别，请升级 Roost Sync。"));
 		}
 		return { manifest: m, etag: r.etag, notModified: false, ...meta };
 	}
@@ -130,17 +131,17 @@ export class RemoteRepo {
 					throw new LockBusyError(held.name, held.expiresAt);
 				}
 				const r = await this.dav.put(LOCK, enc(body), { ifMatch: cur.etag, contentType: "application/json" });
-				if (r !== "ok") throw new LockBusyError("another device", Date.now() + this.lockTtlMs);
+				if (r !== "ok") throw new LockBusyError(L("another device", "其他设备"), Date.now() + this.lockTtlMs);
 			} else {
 				// Released between our PUT and GET: try once more.
 				const r = await this.dav.put(LOCK, enc(body), { ifNoneMatch: "*", contentType: "application/json" });
-				if (r !== "ok") throw new LockBusyError("another device", Date.now() + this.lockTtlMs);
+				if (r !== "ok") throw new LockBusyError(L("another device", "其他设备"), Date.now() + this.lockTtlMs);
 			}
 		}
 		// Conditional PUT is not atomic on WsgiDAV: read back after a short pause.
 		await sleep(300);
 		if (!(await this.lockStillOurs(body.nonce))) {
-			throw new LockBusyError("another device", Date.now() + this.lockTtlMs);
+			throw new LockBusyError(L("another device", "其他设备"), Date.now() + this.lockTtlMs);
 		}
 		this.lock = body;
 		this.renewTimer = setInterval(() => void this.renewLock().catch(() => {}), this.lockTtlMs / 3);
@@ -158,7 +159,7 @@ export class RemoteRepo {
 
 	async renewLock(): Promise<void> {
 		if (!this.lock) return;
-		if (!(await this.lockStillOurs(this.lock.nonce))) throw new Error("Sync lock was lost");
+		if (!(await this.lockStillOurs(this.lock.nonce))) throw new Error(L("Sync lock was lost", "同步锁丢失"));
 		this.lock = { ...this.lock, expiresAt: Date.now() + this.lockTtlMs };
 		await this.dav.put(LOCK, enc(this.lock), { contentType: "application/json" });
 	}
@@ -166,7 +167,7 @@ export class RemoteRepo {
 	/** Verifies we still hold the lock (call before committing). */
 	async assertLock(): Promise<void> {
 		if (!this.lock || !(await this.lockStillOurs(this.lock.nonce))) {
-			throw new Error("Sync lock was lost (another device took it over). Sync again.");
+			throw new Error(L("Sync lock was lost (another device took it over). Sync again.", "同步锁被其他设备接管了，请再同步一次。"));
 		}
 	}
 

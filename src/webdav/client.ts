@@ -1,3 +1,4 @@
+import { L } from "../i18n";
 import { XMLParser } from "fast-xml-parser";
 import type { HttpResponse, HttpTransport } from "./transport";
 
@@ -14,7 +15,7 @@ export class WebDavError extends Error {
 
 export class PreconditionFailedError extends Error {
 	constructor(method: string, path: string) {
-		super(`${method} ${path}: changed on the server in the meantime (HTTP 412)`);
+		super(L(`${method} ${path}: changed on the server in the meantime (HTTP 412)`, `${method} ${path}：服务器上的文件在此期间被改动了（HTTP 412）`));
 	}
 }
 
@@ -127,7 +128,7 @@ export class WebDavClient {
 	}
 
 	private fail(method: string, path: string, res: HttpResponse): never {
-		const detail = res.status === 401 ? "authentication failed" : "";
+		const detail = res.status === 401 ? L("wrong username or password", "用户名或密码错误") : res.status === 403 ? L("permission denied", "没有权限") : res.status === 507 ? L("server disk full", "服务器磁盘已满") : "";
 		throw new WebDavError(method, path, res.status, detail);
 	}
 

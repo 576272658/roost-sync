@@ -146,3 +146,95 @@ describe("threshold guard", () => {
 		expect(needsPreview(actions, 1000, 50, 100)).toBe(true);
 	});
 });
+
+describe("rename detection (§5.7)", () => {
+	const plan = (o: Partial<Parameters<typeof planSync>[0]>) =>
+		planSync({ local: {}, base: {}, manifest: manifest(), joinMode: false, skip: () => false, ...o });
+
+	it("renamed here → one server-side move, not risky", () => {
+		const a = plan({
+			local: { "new/a.md": loc("x") },
+			base: { "old/a.md": { hash: H("x"), rev: 1 } },
+			manifest: manifest({ "old/a.md": file("x") }),
+		});
+		expect(a).toHaveLength(1);
+		expect(a[0]).toMatchObject({ kind: "moveRemote", from: "old/a.md", path: "new/a.md" });
+		expect(summarize(a)).toMatchObject({ move: 1, risky: 0 });
+	});
+
+	it("renamed elsewhere → one local move, no download", () => {
+		const a = plan({
+			local: { "old/a.md": loc("x") },
+			base: { "old/a.md": { hash: H("x"), rev: 1 } },
+			manifest: manifest({ "new/a.md": file("x", 2) }, { "old/a.md": tomb("x") }),
+		});
+		expect(a).toHaveLength(1);
+		expect(a[0]).toMatchObject({ kind: "moveLocal", from: "old/a.md", path: "new/a.md" });
+	});
+
+	it("rename + edit stays delete + add", () => {
+		const a = plan({
+			local: { "new.md": loc("y") },
+			base: { "old.md": { hash: H("x"), rev: 1 } },
+			manifest: manifest({ "old.md": file("x") }),
+		});
+		expect(a.map((x) => x.kind).sort()).toEqual(["deleteRemote", "push"]);
+	});
+
+	it("case-only rename is not a move", () => {
+		const a = plan({
+			local: { "A.md": loc("x") },
+			base: { "a.md": { hash: H("x"), rev: 1 } },
+			manifest: manifest({ "a.md": file("x") }),
+		});
+		expect(a.map((x) => x.kind).sort()).toEqual(["deleteRemote", "push"]);
+	});
+
+	it("prefers the candidate with the same file name", () => {
+		const a = plan({
+			local: { "z/two.md": loc("x") },
+			base: { "a/one.md": { hash: H("x"), rev: 1 }, "b/two.md": { hash: H("x"), rev: 1 } },
+			manifest: manifest({ "a/one.md": file("x"), "b/two.md": file("x") }),
+		});
+		expect(a.find((x) => x.kind === "moveRemote")?.from).toBe("b/two.md");
+	});
+});
+
+describe("config files", () => {
+	const isConfig = (p: string) => p.startsWith(".obsidian/");
+	const P = ".obsidian/app.json";
+	const mk = (L: { hash: string; mtime: number }, R: { hash: string; mtime: number }, withBase: boolean) =>
+		planSync({
+			local: { [P]: { hash: L.hash, size: 1, mtime: L.mtime } },
+			base: withBase ? { [P]: { hash: H("base"), rev: 1 } } : {},
+			manifest: manifest({ [P]: { hash: R.hash, size: 1, mtime: R.mtime, rev: 2, by: "x" } }),
+			joinMode: false,
+			skip: () => false,
+			isConfig,
+		})[0];
+
+	it("conflict: this device newer → keep local, archive server copy", () => {
+		expect(mk({ hash: H("l"), mtime: 20 }, { hash: H("r"), mtime: 10 }, true)).toMatchObject({ kind: "push", archive: "remote", autoResolved: true });
+	});
+	it("conflict: server newer → pull, archive local copy", () => {
+		expect(mk({ hash: H("l"), mtime: 10 }, { hash: H("r"), mtime: 20 }, true)).toMatchObject({ kind: "pull", archive: "local", autoResolved: true });
+	});
+	it("conflict without history → server wins", () => {
+		expect(mk({ hash: H("l"), mtime: 99 }, { hash: H("r"), mtime: 1 }, false)).toMatchObject({ kind: "pull", autoResolved: true });
+	});
+	it("join mode: config file only here defaults to delete", () => {
+		const a = planSync({ local: { ".obsidian/plugins/old/main.js": loc("x") }, base: {}, manifest: manifest(), joinMode: true, skip: () => false, isConfig });
+		expect(a[0]).toMatchObject({ kind: "ask", defaultChoice: "deleteLocal" });
+	});
+});
+
+describe("messages follow the language setting", () => {
+	it("Chinese and English reasons", async () => {
+		const { setLanguage } = await import("../src/i18n");
+		const run = () => planSync({ local: { "a.md": loc("a") }, base: {}, manifest: manifest(), joinMode: false, skip: () => false })[0].reason;
+		setLanguage("zh");
+		expect(run()).toBe("本机新建");
+		setLanguage("en");
+		expect(run()).toBe("new here");
+	});
+});

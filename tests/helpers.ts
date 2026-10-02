@@ -7,6 +7,7 @@ import { RemoteRepo } from "../src/sync/remote";
 import { WebDavClient } from "../src/webdav/client";
 import { fetchTransport } from "../src/webdav/transport";
 import { DEFAULT_IGNORES, IgnoreRules } from "../src/util/paths";
+import { DEFAULT_CONFIG_SYNC } from "../src/sync/config";
 import { randomId } from "../src/util/hash";
 import type { AskChoice } from "../src/sync/types";
 
@@ -24,7 +25,7 @@ export async function startWsgiDav(): Promise<{ url: string; root: string; stop:
 		{ stdio: "ignore" },
 	);
 	const url = `http://127.0.0.1:${port}/`;
-	for (let i = 0; i < 120; i++) {
+	for (let i = 0; i < 480; i++) {
 		try {
 			const r = await fetch(url, { method: "PROPFIND", headers: { Depth: "0" } });
 			if (r.status === 207) break;
@@ -45,15 +46,17 @@ export async function startWsgiDav(): Promise<{ url: string; root: string; stop:
 
 // ---------- in-memory vault ----------
 
+/** One clock for all simulated devices, like real time. */
+let clock = 1_700_000_000_000;
+
 export class MemFs implements LocalFs {
 	files = new Map<string, { data: Uint8Array; mtime: number }>();
 	dirs = new Set<string>();
 	trashed: string[] = [];
-	private clock = 1_700_000_000_000;
 
 	set(path: string, text: string) {
-		this.clock += 1000;
-		this.files.set(path, { data: new TextEncoder().encode(text), mtime: this.clock });
+		clock += 1000;
+		this.files.set(path, { data: new TextEncoder().encode(text), mtime: clock });
 	}
 	text(path: string): string | undefined {
 		const f = this.files.get(path);
@@ -61,8 +64,8 @@ export class MemFs implements LocalFs {
 	}
 	/** Changes mtime but not content (e.g. another plugin touched the file). */
 	touch(path: string) {
-		this.clock += 1000;
-		this.files.get(path)!.mtime = this.clock;
+		clock += 1000;
+		this.files.get(path)!.mtime = clock;
 	}
 	remove(path: string) {
 		this.files.delete(path);
@@ -76,8 +79,8 @@ export class MemFs implements LocalFs {
 		return f.data.slice().buffer;
 	}
 	async write(path: string, data: ArrayBuffer, mtime?: number): Promise<LocalStat> {
-		this.clock += 1000;
-		const f = { data: new Uint8Array(data.slice(0)), mtime: mtime ?? this.clock };
+		clock += 1000;
+		const f = { data: new Uint8Array(data.slice(0)), mtime: mtime ?? clock };
 		this.files.set(path, f);
 		return { mtime: f.mtime, size: f.data.byteLength };
 	}
@@ -88,6 +91,12 @@ export class MemFs implements LocalFs {
 	async trash(path: string) {
 		this.files.delete(path);
 		this.trashed.push(path);
+	}
+	async rename(from: string, to: string) {
+		const f = this.files.get(from);
+		if (!f) throw new Error(`ENOENT ${from}`);
+		this.files.delete(from);
+		this.files.set(to, f);
 	}
 	async removeEmptyDir(dir: string) {
 		return ![...this.files.keys()].some((p) => p.startsWith(dir + "/"));
@@ -118,7 +127,7 @@ export class AutoUI implements SyncUI {
 	progress() {}
 }
 
-export function device(serverUrl: string, folder: string, name: string) {
+export function device(serverUrl: string, folder: string, name: string, opts: { config?: boolean } = {}) {
 	const fs = new MemFs();
 	const store = new MemStore();
 	const ui = new AutoUI();
@@ -128,7 +137,7 @@ export function device(serverUrl: string, folder: string, name: string) {
 	const engine = new SyncEngine(fs, store, remote, ui, {
 		device: { id, name, platform: "test" },
 		pluginVersion: "test",
-		ignore: new IgnoreRules(DEFAULT_IGNORES),
+		ignore: new IgnoreRules(DEFAULT_IGNORES, opts.config ? DEFAULT_CONFIG_SYNC : null),
 		maxFileSize: 1024 * 1024,
 		thresholdPercent: 50,
 		thresholdMin: 5,

@@ -2,6 +2,8 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import { L } from "./i18n";
 import type RoostSyncPlugin from "./main";
 import { DEFAULT_IGNORES } from "./util/paths";
+import { DEFAULT_CONFIG_SYNC, type ConfigSyncOptions } from "./sync/config";
+import type { LanguageSetting } from "./i18n";
 
 export interface RoostSettings {
 	serverUrl: string;
@@ -23,6 +25,8 @@ export interface RoostSettings {
 	tombstoneDays: number;
 	archiveDays: number;
 	concurrency: number;
+	language: LanguageSetting;
+	configSync: ConfigSyncOptions;
 }
 
 export const DEFAULT_SETTINGS: Omit<RoostSettings, "deviceId" | "deviceName" | "remoteFolder"> = {
@@ -42,6 +46,8 @@ export const DEFAULT_SETTINGS: Omit<RoostSettings, "deviceId" | "deviceName" | "
 	tombstoneDays: 90,
 	archiveDays: 30,
 	concurrency: 4,
+	language: "auto",
+	configSync: DEFAULT_CONFIG_SYNC,
 };
 
 export class RoostSettingTab extends PluginSettingTab {
@@ -66,6 +72,23 @@ export class RoostSettingTab extends PluginSettingTab {
 					}
 				});
 			});
+
+		new Setting(containerEl)
+			.setName(L("Language", "语言"))
+			.setDesc(L("Messages and dialogs. Command names change after restarting Obsidian.", "提示和窗口的语言。命令面板里的命令名重启 Obsidian 后更新。"))
+			.addDropdown((d) =>
+				d
+					.addOption("auto", L("Follow Obsidian", "跟随 Obsidian"))
+					.addOption("zh", "中文")
+					.addOption("en", "English")
+					.setValue(s.language)
+					.onChange(async (v) => {
+						s.language = v as LanguageSetting;
+						await save();
+						this.plugin.applyLanguage();
+						this.display();
+					}),
+			);
 
 		new Setting(containerEl).setName(L("Server", "服务器")).setHeading();
 		new Setting(containerEl)
@@ -100,6 +123,40 @@ export class RoostSettingTab extends PluginSettingTab {
 				),
 			)
 			.addToggle((t) => t.setValue(s.detectServerChanges).onChange(async (v) => ((s.detectServerChanges = v), await save())));
+
+		new Setting(containerEl).setName(L("Obsidian settings and plugins", "Obsidian 设置和插件")).setHeading();
+		const cfg = s.configSync;
+		const cfgToggle = (name: string, desc: string, key: keyof ConfigSyncOptions) =>
+			new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addToggle((t) =>
+					t.setValue(cfg[key]).onChange(async (v) => {
+						cfg[key] = v;
+						await save();
+						if (key === "enabled") this.display();
+					}),
+				);
+		cfgToggle(
+			L("Sync the config folder", "同步配置目录"),
+			L(
+				`Sync parts of ${this.app.vault.configDir}/ below. Never synced: workspace layout, and Roost Sync's own folder (password, device id). Exclude one plugin by adding \`.obsidian/plugins/<id>/\` to Ignore.`,
+				`同步 ${this.app.vault.configDir}/ 里下面勾选的部分。永远不同步：工作区布局、Roost Sync 自己的目录（密码、设备 ID）。想排除某个插件，在「忽略规则」里加一行 \`.obsidian/plugins/<插件ID>/\`。`,
+			),
+			"enabled",
+		);
+		if (cfg.enabled) {
+			cfgToggle(L("Community plugins (code and settings)", "第三方插件（代码和设置）"), "plugins/", "plugins");
+			cfgToggle(L("Which plugins are enabled", "插件启用列表"), "community-plugins.json, core-plugins.json", "pluginList");
+			cfgToggle(L("Appearance, themes, CSS snippets", "外观、主题、CSS 片段"), "appearance.json, themes/, snippets/", "appearance");
+			cfgToggle(L("Hotkeys", "快捷键"), "hotkeys.json", "hotkeys");
+			cfgToggle(
+				L("Editor settings and core plugin settings", "编辑器设置和核心插件设置"),
+				"app.json, daily-notes.json, templates.json, bookmarks.json …",
+				"app",
+			);
+			cfgToggle(L("Graph view settings", "关系图设置"), "graph.json", "graph");
+		}
 
 		new Setting(containerEl).setName(L("This device", "本机")).setHeading();
 		new Setting(containerEl)

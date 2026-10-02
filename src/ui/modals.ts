@@ -54,6 +54,7 @@ export class PlanModal extends Modal {
 		stat(L("Upload new", "新建上传"), summary.pushNew, true);
 		stat(L("Restore deleted", "复活"), summary.resurrect, true);
 		stat(L("Download", "下载"), summary.pull);
+		stat(L("Move / rename", "移动 / 重命名"), summary.move);
 		stat(L("Delete on this device", "删除本机文件"), summary.deleteLocal, true);
 		stat(L("Delete on server", "删除服务器文件"), summary.deleteRemote, true);
 		stat(L("Conflicts (asked afterwards)", "冲突（同步后处理）"), summary.conflict);
@@ -94,6 +95,11 @@ export class PlanModal extends Modal {
 		list(contentEl, L("Upload new", "新建上传"), by("push", (a) => !!a.isNew));
 		list(contentEl, L("Upload", "上传"), by("push", (a) => !a.isNew && !a.resurrect));
 		list(contentEl, L("Download", "下载"), by("pull"));
+		list(
+			contentEl,
+			L("Move / rename", "移动 / 重命名"),
+			actions.filter((a) => a.kind === "moveLocal" || a.kind === "moveRemote").map((a) => `${a.from} → ${a.path}`),
+		);
 		list(contentEl, L("Conflicts", "冲突"), by("conflict"));
 
 		const buttons = new Setting(contentEl);
@@ -310,11 +316,12 @@ export class LogModal extends Modal {
 					for (const x of e.errors ?? []) lines.push(`  ✗ ${x}`);
 					for (const x of e.warnings ?? []) lines.push(`  ! ${x}`);
 					const sc = e.serverChanges;
-					if (sc && sc.created.length + sc.modified.length + sc.deleted.length) {
+					if (sc && sc.created.length + sc.modified.length + sc.deleted.length + (sc.moved?.length ?? 0)) {
 						lines.push(L("  Changed directly on the server:", "  服务器目录上的直接修改："));
 						for (const x of sc.created) lines.push(`    + ${x}`);
 						for (const x of sc.modified) lines.push(`    ~ ${x}`);
 						for (const x of sc.deleted) lines.push(`    - ${x}`);
+						for (const x of sc.moved ?? []) lines.push(`    → ${x}`);
 					}
 					for (const x of e.changes ?? []) lines.push(`  · ${x}`);
 					return lines.join("\n");

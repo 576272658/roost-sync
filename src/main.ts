@@ -1,5 +1,6 @@
-import { Notice, Platform, Plugin, TAbstractFile, debounce, normalizePath } from "obsidian";
-import { L } from "./i18n";
+import { Notice, Platform, Plugin, TAbstractFile, moment, normalizePath } from "obsidian";
+import { L, setLanguage } from "./i18n";
+import { DEFAULT_CONFIG_SYNC, configDirMayContain, configFileAllowed, needsRestart } from "./sync/config";
 import { FileStateStore, VaultFs, obsidianTransport, platformName } from "./obsidian/adapters";
 import { DEFAULT_SETTINGS, RoostSettingTab, type RoostSettings } from "./settings";
 import { NotInitializedError, SyncEngine, type SyncResult, type SyncUI } from "./sync/engine";
@@ -25,6 +26,7 @@ export default class RoostSyncPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		this.applyLanguage();
 		this.stateStore = new FileStateStore(this.app, normalizePath(`${this.manifest.dir}/state`));
 
 		this.statusEl = this.addStatusBarItem();
@@ -69,8 +71,17 @@ export default class RoostSyncPlugin extends Plugin {
 			deviceId: randomId(),
 			deviceName: platformName(),
 			...data,
+			configSync: { ...DEFAULT_CONFIG_SYNC, ...(data.configSync ?? {}) },
 		};
 		if (!data.deviceId) await this.saveSettings();
+	}
+
+	/** "auto" follows Obsidian's display language. Commands get renamed after a restart. */
+	applyLanguage() {
+		const pref = this.settings.language;
+		if (pref === "en" || pref === "zh") return setLanguage(pref);
+		const lang = (window.localStorage.getItem("language") || moment.locale() || "en").toLowerCase();
+		setLanguage(lang.startsWith("zh") ? "zh" : "en");
 	}
 
 	async saveSettings() {
@@ -116,11 +127,13 @@ export default class RoostSyncPlugin extends Plugin {
 			progress: (msg) => this.setStatus(`Roost: ${msg}`),
 			...ui,
 		};
-		return new SyncEngine(new VaultFs(this.app), this.stateStore, remote, fullUi, {
+		const cfg = s.configSync;
+		const fs = new VaultFs(this.app, cfg.enabled ? { file: (p) => configFileAllowed(p, cfg), dir: (p) => configDirMayContain(p, cfg) } : null);
+		return new SyncEngine(fs, this.stateStore, remote, fullUi, {
 			device: { id: s.deviceId, name: s.deviceName, platform: platformName() },
 			pluginVersion: this.manifest.version,
-			// The plugin's own folder lives under the config dir, which starts with a dot and is always ignored.
-			ignore: new IgnoreRules(s.ignorePatterns.split("\n")),
+			// This plugin's own folder (password, device id, state) is excluded in config.ts.
+			ignore: new IgnoreRules(s.ignorePatterns.split("\n"), cfg),
 			maxFileSize: s.maxFileSizeMB * 1024 * 1024,
 			thresholdPercent: s.thresholdPercent,
 			thresholdMin: s.thresholdMin,
@@ -146,10 +159,12 @@ export default class RoostSyncPlugin extends Plugin {
 		const quiet = trigger === "interval" || trigger === "edit";
 		let result: SyncResult | null = null;
 		let failure: string | null = null;
+		let busy = false;
 		try {
 			result = await this.buildEngine().sync({ dryRun });
 		} catch (e) {
 			if (e instanceof LockBusyError) {
+				busy = true;
 				failure = L(`Another device is syncing (${e.holder}). Will retry shortly.`, `其他设备正在同步（${e.holder}），稍后自动重试。`);
 				if (trigger !== "conflict") window.setTimeout(() => this.sync(trigger === "manual" ? "manual" : "interval"), 20_000);
 			} else if (e instanceof NotInitializedError) {
@@ -168,7 +183,7 @@ export default class RoostSyncPlugin extends Plugin {
 		const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 		if (failure) {
 			this.setStatus(L(`Roost: failed ${now}`, `Roost：同步失败 ${now}`));
-			if (!quiet || !(failure.includes("syncing") || failure.includes("正在同步"))) new Notice(`Roost Sync: ${failure}`, 10_000);
+			if (!quiet || !busy) new Notice(`Roost Sync: ${failure}`, 10_000);
 			await this.log(trigger, "failed", null, [failure]);
 			return;
 		}
@@ -181,15 +196,30 @@ export default class RoostSyncPlugin extends Plugin {
 		}
 
 		const s = result.summary;
-		const changed = s.push + s.pull + s.deleteLocal + s.deleteRemote;
+		const changed = s.push + s.pull + s.deleteLocal + s.deleteRemote + s.move;
 		if (changed > 0 && !quiet) {
 			const parts = [
-				s.push && L(`↑${s.push}`, `↑${s.push}`),
-				s.pull && L(`↓${s.pull}`, `↓${s.pull}`),
+				s.push && `↑${s.push}`,
+				s.pull && `↓${s.pull}`,
+				s.move && L(`moved ${s.move}`, `移动 ${s.move}`),
 				s.deleteLocal + s.deleteRemote && L(`deleted ${s.deleteLocal + s.deleteRemote}`, `删除 ${s.deleteLocal + s.deleteRemote}`),
 			].filter(Boolean);
 			new Notice(`Roost Sync: ${parts.join("  ")}`);
 		}
+		const auto = result.actions.filter((a) => a.autoResolved);
+		if (auto.length) {
+			new Notice(
+				L(
+					`Roost Sync: ${auto.length} settings file(s) were changed on two devices; kept the newer one (the other is in the server's .sync/conflicts/):\n`,
+					`Roost Sync：${auto.length} 个配置文件在两台设备上都改过，已保留较新的（另一份在服务器 .sync/conflicts/）：\n`,
+				) + auto.slice(0, 5).map((a) => a.path).join("\n"),
+				12_000,
+			);
+		}
+		const localConfigChanged = result.actions.some(
+			(a) => (a.kind === "pull" || a.kind === "deleteLocal" || a.kind === "moveLocal") && needsRestart(a.path),
+		);
+		if (localConfigChanged) this.offerReload();
 		if (result.errors.length) {
 			new Notice(
 				L(`Roost Sync: ${result.errors.length} file(s) skipped or failed:\n`, `Roost Sync：${result.errors.length} 个文件跳过或失败：\n`) +
@@ -201,6 +231,16 @@ export default class RoostSyncPlugin extends Plugin {
 		}
 		this.setConflicts(result.conflicts, true, trigger === "manual" || trigger === "conflict");
 		if (!this.conflicts.length) this.setStatus(L(`Roost: synced ${now}`, `Roost：已同步 ${now}`));
+	}
+
+	/** Plugins, themes and app settings pulled from other devices load after a restart (§4.3). */
+	private offerReload() {
+		const frag = createFragment((f) => {
+			f.appendText(L("Roost Sync: plugins or settings were updated from another device. Reload Obsidian to apply them. ", "Roost Sync：已从其他设备同步了插件或设置，重新加载 Obsidian 后生效。"));
+			const btn = f.createEl("button", { text: L("Reload now", "立即重新加载") });
+			btn.onclick = () => (this.app as any).commands?.executeCommandById("app:reload");
+		});
+		new Notice(frag, 0);
 	}
 
 	private setConflicts(list: ConflictInfo[], maybeOpen: boolean, force = false) {
@@ -269,9 +309,9 @@ export default class RoostSyncPlugin extends Plugin {
 
 	private async log(trigger: string, status: string, r: SyncResult | null, errors: string[] = []) {
 		const changes = (r?.actions ?? [])
-			.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote"].includes(a.kind))
+			.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind))
 			.slice(0, 200)
-			.map((a) => `${a.kind} ${a.path} (${a.reason})`);
+			.map((a) => `${a.kind} ${a.from ? `${a.from} → ` : ""}${a.path} (${a.reason})`);
 		await this.stateStore
 			.appendLog({
 				at: Date.now(),
