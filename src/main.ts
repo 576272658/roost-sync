@@ -1,6 +1,7 @@
 import { Notice, Platform, Plugin, TAbstractFile, moment, normalizePath } from "obsidian";
 import { L, setLanguage } from "./i18n";
 import { DEFAULT_CONFIG_SYNC, configDirMayContain, configFileAllowed, needsRestart } from "./sync/config";
+import { pickShared, syncSharedSettings } from "./sync/sharedSettings";
 import { FileStateStore, VaultFs, obsidianTransport, platformName } from "./obsidian/adapters";
 import { DEFAULT_SETTINGS, RoostSettingTab, type RoostSettings } from "./settings";
 import { AlreadyInitializedError, NotInitializedError, SyncEngine, type SyncResult, type SyncUI } from "./sync/engine";
@@ -73,8 +74,21 @@ export default class RoostSyncPlugin extends Plugin {
 			...data,
 			configSync: { ...DEFAULT_CONFIG_SYNC, ...(data.configSync ?? {}) },
 		};
+		this.sharedSnapshot = JSON.stringify(pickShared(this.settings));
+		if (data.deviceId && data.sharedUpdatedAt === undefined) {
+			// Upgrading from 0.1.1, which did not record when settings changed: if this device's
+			// shared settings were customized, date them by data.json so they beat untouched devices.
+			const defaults = JSON.stringify(pickShared({ ...DEFAULT_SETTINGS, configSync: DEFAULT_CONFIG_SYNC }));
+			if (this.sharedSnapshot !== defaults) {
+				const st = await this.app.vault.adapter.stat(normalizePath(`${this.manifest.dir}/data.json`)).catch(() => null);
+				this.settings.sharedUpdatedAt = st?.mtime ?? 1;
+			}
+			await this.saveData(this.settings);
+		}
 		if (!data.deviceId) await this.saveSettings();
 	}
+
+	private sharedSnapshot = "";
 
 	/** "auto" follows Obsidian's display language. Commands get renamed after a restart. */
 	applyLanguage() {
@@ -84,8 +98,39 @@ export default class RoostSyncPlugin extends Plugin {
 		setLanguage(lang.startsWith("zh") ? "zh" : "en");
 	}
 
-	async saveSettings() {
+	/** Records when a shared setting changed, so the change wins over older values on other devices. */
+	async saveSettings(opts: { keepSharedTimestamp?: boolean } = {}) {
+		const snap = JSON.stringify(pickShared(this.settings));
+		if (snap !== this.sharedSnapshot) {
+			if (!opts.keepSharedTimestamp) this.settings.sharedUpdatedAt = Date.now();
+			this.sharedSnapshot = snap;
+		}
 		await this.saveData(this.settings);
+	}
+
+	/** Exchanges Roost Sync's shared settings with the server before each sync. */
+	private async exchangeSharedSettings(quiet: boolean) {
+		const s = this.settings;
+		if (!s.shareSettings) return;
+		try {
+			const remote = new RemoteRepo(this.dav(), { id: s.deviceId, name: s.deviceName });
+			const r = await syncSharedSettings(remote, s as any, s.sharedUpdatedAt, s.deviceName);
+			if (r.action === "pushed") {
+				s.sharedUpdatedAt = r.updatedAt;
+				await this.saveData(s);
+			} else if (r.action === "pulled") {
+				Object.assign(s, structuredClone(r.settings));
+				s.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
+				s.sharedUpdatedAt = r.updatedAt;
+				this.sharedSnapshot = JSON.stringify(pickShared(s));
+				await this.saveData(s);
+				this.rescheduleTimers();
+				if (!quiet) new Notice(L(`Roost Sync: applied sync settings changed on ${r.by}.`, `Roost Sync：已应用在「${r.by}」上修改的同步设置。`));
+			}
+		} catch (e) {
+			// Not fatal: the server may not be set up yet; the next sync retries.
+			console.warn("Roost Sync: shared settings", e);
+		}
 	}
 
 	rescheduleTimers() {
@@ -161,6 +206,7 @@ export default class RoostSyncPlugin extends Plugin {
 		let failure: string | null = null;
 		let busy = false;
 		let needsSetup = false;
+		if (!dryRun) await this.exchangeSharedSettings(quiet);
 		try {
 			result = await this.buildEngine().sync({ dryRun });
 		} catch (e) {

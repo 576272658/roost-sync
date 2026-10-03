@@ -27,6 +27,10 @@ export interface RoostSettings {
 	concurrency: number;
 	language: LanguageSetting;
 	configSync: ConfigSyncOptions;
+	/** Use the settings shared through the server (sharedSettings.ts). Per device. */
+	shareSettings: boolean;
+	/** When this device last changed a shared setting. */
+	sharedUpdatedAt: number;
 }
 
 export const DEFAULT_SETTINGS: Omit<RoostSettings, "deviceId" | "deviceName" | "remoteFolder"> = {
@@ -48,6 +52,8 @@ export const DEFAULT_SETTINGS: Omit<RoostSettings, "deviceId" | "deviceName" | "
 	concurrency: 4,
 	language: "auto",
 	configSync: DEFAULT_CONFIG_SYNC,
+	shareSettings: true,
+	sharedUpdatedAt: 0,
 };
 
 export class RoostSettingTab extends PluginSettingTab {
@@ -159,6 +165,22 @@ export class RoostSettingTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl).setName(L("This device", "本机")).setHeading();
+		new Setting(containerEl)
+			.setName(L("Use shared settings", "本机使用共用设置"))
+			.setDesc(
+				L(
+					"When on, “When to sync”, “Safety”, “Filters”, “Retention”, server-change detection and the config folder switches are the same on every device: a change made on any device reaches the others at their next sync. Turn off to give this device its own values. Server address, password, device name and language are always per device.",
+					"开启时，「同步时机」「安全」「过滤」「保留期」、服务器直接修改检测和配置目录各开关在所有设备上保持一致：在任意设备上修改，其他设备下次同步时自动应用。关闭则本机单独设置。服务器地址、密码、设备名、语言始终是每台设备各自的。",
+				),
+			)
+			.addToggle((t) =>
+				t.setValue(s.shareSettings).onChange(async (v) => {
+					s.shareSettings = v;
+					// Re-enabling: adopt the shared values at the next sync.
+					if (v) s.sharedUpdatedAt = 0;
+					await this.plugin.saveSettings({ keepSharedTimestamp: true });
+				}),
+			);
 		new Setting(containerEl)
 			.setName(L("Device name", "设备名"))
 			.setDesc(L(`Shown to other devices. Device ID: ${s.deviceId}`, `显示给其他设备看。设备 ID：${s.deviceId}`))
