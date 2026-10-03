@@ -4,6 +4,7 @@
  * Paths are canonical: the config folder is always called ".obsidian" in the
  * manifest and on the server, whatever `vault.configDir` is on a device.
  */
+// Canonical name in the manifest and on the server; VaultFs maps it to this device's vault.configDir.
 export const CONFIG_DIR = ".obsidian";
 export const SELF_ID = "roost-sync";
 

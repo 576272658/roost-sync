@@ -51,7 +51,7 @@ export function stampNow(d = new Date()): string {
 
 export class RemoteRepo {
 	private lock: LockBody | null = null;
-	private renewTimer: ReturnType<typeof setInterval> | null = null;
+	private renewTimer: number | null = null;
 
 	constructor(
 		public dav: WebDavClient,
@@ -144,7 +144,7 @@ export class RemoteRepo {
 			throw new LockBusyError(L("another device", "其他设备"), Date.now() + this.lockTtlMs);
 		}
 		this.lock = body;
-		this.renewTimer = setInterval(() => void this.renewLock().catch(() => {}), this.lockTtlMs / 3);
+		this.renewTimer = window.setInterval(() => void this.renewLock().catch(() => {}), this.lockTtlMs / 3);
 	}
 
 	private async lockStillOurs(nonce: string): Promise<boolean> {
@@ -172,7 +172,7 @@ export class RemoteRepo {
 	}
 
 	async releaseLock(): Promise<void> {
-		if (this.renewTimer) clearInterval(this.renewTimer);
+		if (this.renewTimer) window.clearInterval(this.renewTimer);
 		this.renewTimer = null;
 		const held = this.lock;
 		this.lock = null;

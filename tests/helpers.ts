@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SyncEngine, type LocalFs, type LocalState, type LocalStat, type StateStore, type SyncUI, type PlanReview, type InitReview } from "../src/sync/engine";
 import { RemoteRepo } from "../src/sync/remote";
 import { WebDavClient } from "../src/webdav/client";
-import { fetchTransport } from "../src/webdav/transport";
+import type { HttpTransport } from "../src/webdav/transport";
 import { DEFAULT_IGNORES, IgnoreRules } from "../src/util/paths";
 import { DEFAULT_CONFIG_SYNC } from "../src/sync/config";
 import { randomId } from "../src/util/hash";
@@ -150,3 +150,21 @@ export function device(serverUrl: string, folder: string, name: string, opts: { 
 	});
 	return { name, fs, store, ui, engine, dav, remote };
 }
+
+/** Node's fetch as a transport (the plugin uses Obsidian's requestUrl). */
+export const fetchTransport: HttpTransport = async (req) => {
+	const res = await fetch(req.url, {
+		method: req.method,
+		headers: req.headers,
+		body: req.body,
+	});
+	const buf = await res.arrayBuffer();
+	const headers: Record<string, string> = {};
+	res.headers.forEach((v, k) => (headers[k.toLowerCase()] = v));
+	return {
+		status: res.status,
+		headers,
+		arrayBuffer: buf,
+		text: new TextDecoder().decode(buf),
+	};
+};

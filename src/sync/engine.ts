@@ -838,7 +838,10 @@ export class SyncEngine {
 			if (!movedTo.has(p)) changes.deleted.push(p);
 			dirty = true;
 		}
-		for (const k of Object.values(changes)) k.sort();
+		changes.created.sort();
+		changes.modified.sort();
+		changes.deleted.sort();
+		changes.moved.sort();
 		return { manifest: next, dirty, changes };
 	}
 

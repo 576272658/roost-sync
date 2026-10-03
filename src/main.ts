@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, moment, normalizePath } from "obsidian";
+import { Notice, Platform, Plugin, TAbstractFile, getLanguage, normalizePath } from "obsidian";
 import { L, setLanguage } from "./i18n";
 import { DEFAULT_CONFIG_SYNC, configDirMayContain, configFileAllowed, needsRestart } from "./sync/config";
 import { pickShared, syncSharedSettings } from "./sync/sharedSettings";
@@ -49,7 +49,7 @@ export default class RoostSyncPlugin extends Plugin {
 			const engine = this.configured() ? this.buildEngine() : null;
 			if (engine) this.setConflicts(await engine.loadConflicts().catch(() => []), false);
 			if (this.settings.syncOnStartup && this.configured()) {
-				window.setTimeout(() => this.sync("startup"), this.settings.startupDelaySec * 1000);
+				window.setTimeout(() => void this.sync("startup"), this.settings.startupDelaySec * 1000);
 			}
 			const onEdit = (f: TAbstractFile) => this.onVaultEdit(f);
 			this.registerEvent(this.app.vault.on("modify", onEdit));
@@ -65,7 +65,7 @@ export default class RoostSyncPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		const data = (await this.loadData()) ?? {};
+		const data = ((await this.loadData()) ?? {}) as Partial<RoostSettings>;
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			remoteFolder: this.app.vault.getName(),
@@ -94,7 +94,7 @@ export default class RoostSyncPlugin extends Plugin {
 	applyLanguage() {
 		const pref = this.settings.language;
 		if (pref === "en" || pref === "zh") return setLanguage(pref);
-		const lang = (window.localStorage.getItem("language") || moment.locale() || "en").toLowerCase();
+		const lang = getLanguage().toLowerCase();
 		setLanguage(lang.startsWith("zh") ? "zh" : "en");
 	}
 
@@ -114,7 +114,7 @@ export default class RoostSyncPlugin extends Plugin {
 		if (!s.shareSettings) return;
 		try {
 			const remote = new RemoteRepo(this.dav(), { id: s.deviceId, name: s.deviceName });
-			const r = await syncSharedSettings(remote, s as any, s.sharedUpdatedAt, s.deviceName);
+			const r = await syncSharedSettings(remote, s, s.sharedUpdatedAt, s.deviceName);
 			if (r.action === "pushed") {
 				s.sharedUpdatedAt = r.updatedAt;
 				await this.saveData(s);
@@ -127,9 +127,8 @@ export default class RoostSyncPlugin extends Plugin {
 				this.rescheduleTimers();
 				if (!quiet) new Notice(L(`Roost Sync: applied sync settings changed on ${r.by}.`, `Roost Sync：已应用在「${r.by}」上修改的同步设置。`));
 			}
-		} catch (e) {
+		} catch {
 			// Not fatal: the server may not be set up yet; the next sync retries.
-			console.warn("Roost Sync: shared settings", e);
 		}
 	}
 
@@ -138,7 +137,7 @@ export default class RoostSyncPlugin extends Plugin {
 		this.intervalId = null;
 		const m = this.settings?.intervalMinutes ?? 0;
 		if (m > 0) {
-			this.intervalId = window.setInterval(() => this.sync("interval"), m * 60_000);
+			this.intervalId = window.setInterval(() => void this.sync("interval"), m * 60_000);
 			this.registerInterval(this.intervalId);
 		}
 	}
@@ -147,7 +146,7 @@ export default class RoostSyncPlugin extends Plugin {
 		const sec = this.settings.syncAfterEditSec;
 		if (!sec || this.running || !this.configured()) return;
 		if (this.editTimer) window.clearTimeout(this.editTimer);
-		this.editTimer = window.setTimeout(() => this.sync("edit"), sec * 1000);
+		this.editTimer = window.setTimeout(() => void this.sync("edit"), sec * 1000);
 	}
 
 	private configured(): boolean {
@@ -213,7 +212,7 @@ export default class RoostSyncPlugin extends Plugin {
 			if (e instanceof LockBusyError) {
 				busy = true;
 				failure = L(`Another device is syncing (${e.holder}). Will retry shortly.`, `其他设备正在同步（${e.holder}），稍后自动重试。`);
-				if (trigger !== "conflict") window.setTimeout(() => this.sync(trigger === "manual" ? "manual" : "interval"), 20_000);
+				if (trigger !== "conflict") window.setTimeout(() => void this.sync(trigger === "manual" ? "manual" : "interval"), 20_000);
 			} else if (e instanceof NotInitializedError) {
 				// First device on an empty server: set it up right away (asks about server-only files).
 				needsSetup = true;
@@ -287,8 +286,12 @@ export default class RoostSyncPlugin extends Plugin {
 	private offerReload() {
 		const frag = createFragment((f) => {
 			f.appendText(L("Roost Sync: plugins or settings were updated from another device. Reload Obsidian to apply them. ", "Roost Sync：已从其他设备同步了插件或设置，重新加载 Obsidian 后生效。"));
-			const btn = f.createEl("button", { text: L("Reload now", "立即重新加载") });
-			btn.onclick = () => (this.app as any).commands?.executeCommandById("app:reload");
+			// "Reload app without saving" is a built-in command; skip the button if it is unavailable.
+			const commands = (this.app as unknown as { commands?: { executeCommandById?: (id: string) => boolean } }).commands;
+			if (typeof commands?.executeCommandById === "function") {
+				const btn = f.createEl("button", { text: L("Reload now", "立即重新加载") });
+				btn.onclick = () => commands.executeCommandById!("app:reload");
+			}
 		});
 		new Notice(frag, 0);
 	}
@@ -300,7 +303,7 @@ export default class RoostSyncPlugin extends Plugin {
 		const key = list.map((c) => `${c.path}:${c.localHash}:${c.remoteHash}`).sort().join("|");
 		if (maybeOpen && (force || key !== this.lastShownConflicts)) {
 			this.lastShownConflicts = key;
-			this.openConflicts();
+			void this.openConflicts();
 		}
 	}
 

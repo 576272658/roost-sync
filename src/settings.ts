@@ -67,6 +67,19 @@ export class RoostSettingTab extends PluginSettingTab {
 		const save = () => this.plugin.saveSettings();
 		containerEl.empty();
 
+		const version = this.plugin.manifest.version;
+		new Setting(containerEl)
+			.setName(L(`Roost Sync ${version}`, `Roost Sync ${version}`))
+			.setDesc(
+				createFragment((f) => {
+					f.appendText(L("Current version. Changes in each version: ", "当前版本。各版本的更新内容："));
+					f.createEl("a", {
+						text: L("release notes", "发布说明"),
+						href: "https://github.com/576272658/roost-sync/releases",
+					});
+				}),
+			);
+
 		const num = (setting: Setting, get: () => number, set: (n: number) => void, min = 0) =>
 			setting.addText((t) => {
 				t.inputEl.type = "number";
@@ -100,7 +113,7 @@ export class RoostSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName(L("WebDAV address", "WebDAV 地址"))
 			.setDesc(L("For example http://mac-mini.tailnet.ts.net:8080/", "例如 http://mac-mini.tailnet.ts.net:8080/"))
-			.addText((t) => t.setPlaceholder("http://…").setValue(s.serverUrl).onChange(async (v) => ((s.serverUrl = v.trim()), await save())));
+			.addText((t) => t.setValue(s.serverUrl).onChange(async (v) => ((s.serverUrl = v.trim()), await save())));
 		new Setting(containerEl)
 			.setName(L("Username", "用户名"))
 			.addText((t) => t.setValue(s.username).onChange(async (v) => ((s.username = v), await save())));
@@ -130,7 +143,7 @@ export class RoostSettingTab extends PluginSettingTab {
 			)
 			.addToggle((t) => t.setValue(s.detectServerChanges).onChange(async (v) => ((s.detectServerChanges = v), await save())));
 
-		new Setting(containerEl).setName(L("Obsidian settings and plugins", "Obsidian 设置和插件")).setHeading();
+		new Setting(containerEl).setName(L("Config folder", "配置目录")).setHeading();
 		const cfg = s.configSync;
 		const cfgToggle = (name: string, desc: string, key: keyof ConfigSyncOptions) =>
 			new Setting(containerEl)

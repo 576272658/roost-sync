@@ -3,8 +3,7 @@ import { RemoteRepo } from "../src/sync/remote";
 import { syncSharedSettings } from "../src/sync/sharedSettings";
 import { randomId } from "../src/util/hash";
 import { WebDavClient } from "../src/webdav/client";
-import { fetchTransport } from "../src/webdav/transport";
-import { hasUvx, startWsgiDav } from "./helpers";
+import { fetchTransport, hasUvx, startWsgiDav } from "./helpers";
 
 describe.skipIf(!hasUvx)("Roost Sync's own settings shared across devices", () => {
 	let server: Awaited<ReturnType<typeof startWsgiDav>>;

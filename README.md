@@ -50,6 +50,13 @@ Do **not** copy `data.json` between devices. It holds that device's ID and passw
 
 Commands: Sync now, Show sync plan (dry run), Resolve conflicts, Test connection, Initialize server from this device, Show sync log.
 
+## Network use and privacy
+
+- Roost Sync connects **only to the WebDAV server you configure**. It sends your vault files, the selected `.obsidian` files and its sync records (`.sync/`) there, and nowhere else.
+- No telemetry, analytics or ads. No account is needed, and nothing is paid.
+- Your WebDAV password is stored in this plugin's `data.json` on each device and is never uploaded or synced.
+- Files under `.obsidian/` are read and written through Obsidian's adapter API, because the Vault API does not expose hidden folders. Roost Sync's own state lives in its plugin folder (`state/`) as plain JSON.
+
 ## Development
 
 ```bash

@@ -3,6 +3,7 @@ import { L } from "../i18n";
 import type { InitReview, PlanReview } from "../sync/engine";
 import { SERVER_DIRECT, type Action, type AskChoice, type ConflictInfo, type ConflictResolution } from "../sync/types";
 import type { ProbeStep } from "../webdav/probe";
+import type { SyncLogEntry } from "../obsidian/adapters";
 
 const MAX_LIST = 300;
 
@@ -185,7 +186,7 @@ export class ConflictModal extends Modal {
 		app: App,
 		private conflicts: ConflictInfo[],
 		private load: (c: ConflictInfo) => Promise<{ local: ArrayBuffer | null; remote: ArrayBuffer | null }>,
-		private apply: (res: Record<string, ConflictResolution>) => void,
+		private apply: (res: Record<string, ConflictResolution>) => Promise<void>,
 	) {
 		super(app);
 	}
@@ -262,7 +263,7 @@ export class ConflictModal extends Modal {
 							if (v !== "later") res[c.path] = { choice: v, remoteHash: c.remoteHash };
 						}
 						this.close();
-						if (Object.keys(res).length) this.apply(res);
+						if (Object.keys(res).length) void this.apply(res);
 					}),
 			);
 	}
@@ -303,7 +304,7 @@ export class ProbeModal extends Modal {
 }
 
 export class LogModal extends Modal {
-	constructor(app: App, private entries: any[]) {
+	constructor(app: App, private entries: SyncLogEntry[]) {
 		super(app);
 	}
 	onOpen() {

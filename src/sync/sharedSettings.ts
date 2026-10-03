@@ -32,9 +32,10 @@ export interface SharedSettingsFile {
 
 const PATH = `${SYNC_DIR}/settings.json`;
 
-export function pickShared(settings: Record<string, any>): Record<string, unknown> {
+export function pickShared(settings: object): Record<string, unknown> {
+	const src = settings as Record<string, unknown>;
 	const out: Record<string, unknown> = {};
-	for (const k of SHARED_KEYS) if (k in settings) out[k] = structuredClone(settings[k]);
+	for (const k of SHARED_KEYS) if (k in src) out[k] = structuredClone(src[k]);
 	return out;
 }
 
@@ -50,15 +51,16 @@ export type SharedSyncResult =
  */
 export async function syncSharedSettings(
 	remote: RemoteRepo,
-	local: Record<string, any>,
+	settings: object,
 	localUpdatedAt: number,
 	deviceName: string,
 ): Promise<SharedSyncResult> {
+	const local = settings as Record<string, unknown>;
 	const got = await remote.dav.get(PATH);
 	let server: SharedSettingsFile | null = null;
 	if (got.status === 200) {
 		try {
-			server = JSON.parse(new TextDecoder().decode(got.data!)) as SharedSettingsFile;
+			server = JSON.parse(new TextDecoder().decode(got.data)) as SharedSettingsFile;
 		} catch {
 			server = null;
 		}

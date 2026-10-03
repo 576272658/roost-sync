@@ -230,7 +230,7 @@ describe.skipIf(!hasUvx)("connection test against WsgiDAV 4.3.3", () => {
 	it("passes every check", async () => {
 		const { probeServer } = await import("../src/webdav/probe");
 		const { WebDavClient } = await import("../src/webdav/client");
-		const { fetchTransport } = await import("../src/webdav/transport");
+		const { fetchTransport } = await import("./helpers");
 		const server = await startWsgiDav();
 		try {
 			const steps = await probeServer(new WebDavClient(fetchTransport, server.url, "probe vault"), (en) => en);

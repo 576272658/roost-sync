@@ -93,7 +93,7 @@ export class IgnoreRules {
 }
 
 const WIN_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- Windows forbids control characters in file names
 const WIN_BAD_CHARS = /[<>:"|?*\\\u0000-\u001f]/;
 
 /** Returns a reason if `path` cannot be stored on Windows, else null. */

@@ -95,7 +95,7 @@ export function planSync(input: PlanInput): Action[] {
 			const r = !R ? "deleted" : R.hash === B.hash ? "same" : "changed";
 			switch (`${l}/${r}`) {
 				case "same/same":
-					if (R!.rev !== B.rev) actions.push({ ...ctx, kind: "markSynced", reason: say("unchanged", "未变") });
+					if (R && R.rev !== B.rev) actions.push({ ...ctx, kind: "markSynced", reason: say("unchanged", "未变") });
 					break;
 				case "same/changed":
 					actions.push({ ...ctx, kind: "pull", reason: say("changed on server", "服务器上有修改") });
@@ -108,7 +108,7 @@ export function planSync(input: PlanInput): Action[] {
 					break;
 				case "changed/changed":
 					actions.push(
-						L!.hash === R!.hash
+						L?.hash === R?.hash
 							? { ...ctx, kind: "markSynced", reason: say("same change on both sides", "两边改成了相同内容") }
 							: conflict(say("changed on both sides", "两边都改了")),
 					);

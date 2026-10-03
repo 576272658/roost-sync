@@ -13,7 +13,7 @@ export async function runPool<T>(items: T[], limit: number, fn: (item: T) => Pro
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-	if (firstError !== null) throw firstError;
+	if (firstError !== null) throw firstError instanceof Error ? firstError : new Error(typeof firstError === "string" ? firstError : "Task failed");
 }
 
-export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));

@@ -1,5 +1,17 @@
 import { Platform, TFile, TFolder, normalizePath as obsNormalize, requestUrl, type App } from "obsidian";
-import type { LocalFs, LocalState, LocalStat, StateStore } from "../sync/engine";
+import type { LocalFs, LocalState, LocalStat, ServerChanges, StateStore } from "../sync/engine";
+import type { PlanSummary } from "../sync/plan";
+
+export interface SyncLogEntry {
+	at: number;
+	trigger: string;
+	status: string;
+	summary?: PlanSummary;
+	errors?: string[];
+	warnings?: string[];
+	serverChanges?: ServerChanges;
+	changes?: string[];
+}
 import { lowerCaseHeaders, type HttpTransport } from "../webdav/transport";
 import { parentOf } from "../webdav/client";
 import { CONFIG_DIR, isConfigPath } from "../sync/config";
@@ -138,8 +150,8 @@ export class VaultFs implements LocalFs {
 	async trash(path: string): Promise<void> {
 		const f = isConfigPath(path) ? null : this.app.vault.getAbstractFileByPath(path);
 		if (f) {
-			// system=true: OS trash on desktop; Obsidian falls back to the vault's .trash/ (mobile).
-			await this.app.vault.trash(f, true);
+			// Follows the user's "Deleted files" preference. The server keeps its own copy in .sync/trash/.
+			await this.app.fileManager.trashFile(f);
 			return;
 		}
 		const adapter = this.app.vault.adapter;
@@ -199,7 +211,7 @@ export class FileStateStore implements StateStore {
 		if (!base) return null;
 		const hashCache = (await this.readJson<LocalState["hashCache"]>("hashcache.json").catch(() => null)) ?? {};
 		const manifestCache = await this.readJson<LocalState["manifestCache"]>("manifest-cache.json").catch(() => null);
-		return { ...core, base, hashCache, manifestCache } as LocalState;
+		return { ...core, base, hashCache, manifestCache };
 	}
 
 	async save(state: LocalState): Promise<void> {
@@ -220,12 +232,12 @@ export class FileStateStore implements StateStore {
 		}
 	}
 
-	async appendLog(entry: unknown, keep = 50): Promise<void> {
+	async appendLog(entry: SyncLogEntry, keep = 50): Promise<void> {
 		const a = this.app.vault.adapter;
 		const name = this.p("sync-log.json");
 		let log: unknown[] = [];
 		try {
-			if (await a.exists(name)) log = JSON.parse(await a.read(name));
+			if (await a.exists(name)) log = JSON.parse(await a.read(name)) as unknown[];
 		} catch {
 			log = [];
 		}
@@ -233,9 +245,9 @@ export class FileStateStore implements StateStore {
 		await a.write(name, JSON.stringify(log.slice(0, keep), null, 1));
 	}
 
-	async readLog(): Promise<any[]> {
+	async readLog(): Promise<SyncLogEntry[]> {
 		try {
-			return (await this.readJson<any[]>("sync-log.json")) ?? [];
+			return (await this.readJson<SyncLogEntry[]>("sync-log.json")) ?? [];
 		} catch {
 			return [];
 		}

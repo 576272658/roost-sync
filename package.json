@@ -1,7 +1,7 @@
 {
   "name": "roost-sync",
-  "version": "0.1.2",
-  "description": "Obsidian plugin: WebDAV sync with server-side tombstones.",
+  "version": "0.1.3",
+  "description": "Obsidian plugin: sync your vault, settings and plugins with your own WebDAV server.",
   "main": "main.js",
   "private": true,
   "license": "MIT",
@@ -9,14 +9,20 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "test": "vitest run",
-    "version": "node scripts/version-bump.mjs && git add manifest.json versions.json"
+    "version": "node scripts/version-bump.mjs && git add manifest.json versions.json",
+    "lint": "eslint src"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@eslint/json": "^0.14.0",
     "@types/node": "^20.0.0",
     "esbuild": "^0.24.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "obsidian": "latest",
     "tslib": "^2.6.0",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^2.0.0"
   },
   "dependencies": {

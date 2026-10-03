@@ -153,11 +153,15 @@ export class WebDavClient {
 			parseTagValue: false,
 			isArray: (name) => name === "response" || name === "propstat",
 		});
-		const doc = parser.parse(xml);
-		const responses: any[] = doc?.multistatus?.response ?? [];
+		interface PropStat {
+			status?: string;
+			prop?: Record<string, unknown> & { resourcetype?: unknown };
+		}
+		const doc = parser.parse(xml) as { multistatus?: { response?: { href?: unknown; propstat?: PropStat[] }[] } };
+		const responses = doc?.multistatus?.response ?? [];
 		const out: DavEntry[] = [];
 		for (const r of responses) {
-			let href = String(r.href ?? "");
+			let href = str(r.href) ?? "";
 			try {
 				if (/^https?:\/\//i.test(href)) href = new URL(href).pathname;
 				href = decodeURIComponent(href);
@@ -170,15 +174,15 @@ export class WebDavClient {
 				else continue;
 			}
 			const rel = href.slice(this.rootPath.length).replace(/^\/+|\/+$/g, "");
-			const ok = (r.propstat as any[]).find((p) => String(p.status ?? "").includes(" 200"));
-			const prop = ok?.prop ?? {};
+			const ok = (r.propstat ?? []).find((p) => String(p.status ?? "").includes(" 200"));
+			const prop: Record<string, unknown> & { resourcetype?: unknown } = ok?.prop ?? {};
 			const isDir = prop.resourcetype != null && typeof prop.resourcetype === "object" && "collection" in prop.resourcetype;
 			out.push({
 				path: rel.normalize("NFC"),
 				isDir,
 				size: Number(prop.getcontentlength ?? 0) || 0,
-				mtime: parseHttpDate(prop.getlastmodified) ?? 0,
-				etag: normEtag(prop.getetag != null ? String(prop.getetag) : undefined),
+				mtime: parseHttpDate(str(prop.getlastmodified)) ?? 0,
+				etag: normEtag(str(prop.getetag)),
 			});
 		}
 		return out;
@@ -240,7 +244,7 @@ export class WebDavClient {
 
 	async getText(path: string): Promise<string | null> {
 		const r = await this.get(path);
-		return r.status === 200 ? new TextDecoder().decode(r.data!) : null;
+		return r.status === 200 ? new TextDecoder().decode(r.data) : null;
 	}
 
 	/** Returns "ok", or "precondition-failed" (HTTP 412) when a condition header fails. */
@@ -346,6 +350,11 @@ export class WebDavClient {
 		if (res.status >= 200 && res.status < 300) return true;
 		this.fail("MOVE", from, res);
 	}
+}
+
+/** XML text content as a string (the parser yields strings or numbers for leaf elements). */
+function str(v: unknown): string | undefined {
+	return typeof v === "string" ? v : typeof v === "number" ? String(v) : undefined;
 }
 
 export function parentOf(path: string): string {
