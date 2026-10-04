@@ -28,13 +28,20 @@ Roost Sync keeps the authoritative state on the server:
 
 ## Install
 
-### With BRAT (recommended, works on iPhone/iPad/Android too)
+### From Community plugins (recommended)
+1. In Obsidian, open **Settings → Community plugins → Browse** and search for **Roost Sync**.
+2. Select **Install**, then **Enable**.
+
+Install it on every device that should sync. Obsidian keeps it updated.
+
+### With BRAT (beta versions)
+Use this to try a version before it reaches Community plugins.
 1. Install **BRAT** from Community plugins and enable it.
 2. Open this link on the device: `obsidian://brat?plugin=576272658/roost-sync`.
    Or, in BRAT's settings, choose **Add beta plugin** and enter `576272658/roost-sync`.
 3. Enable **Roost Sync** in Community plugins.
 
-BRAT keeps the plugin updated. Once settings sync is on, BRAT's plugin list syncs to your other devices too, so their BRAT keeps Roost Sync updated as well.
+To switch from BRAT to Community plugins, remove Roost Sync from BRAT's list. Do not uninstall the plugin: it is the same plugin, so your settings and sync state are kept.
 
 ### Manually
 Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/576272658/roost-sync/releases/latest). Put them in `<vault>/.obsidian/plugins/roost-sync/`.
