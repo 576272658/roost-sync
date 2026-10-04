@@ -156,6 +156,15 @@ export default class RoostSyncPlugin extends Plugin {
 
 	private setStatus(text: string) {
 		this.statusEl?.setText(text);
+		this.progressNotice?.setMessage(text.replace(/^Roost(:|：)/, "Roost Sync$1"));
+	}
+
+	/** Mobile has no status bar: a manual sync shows its progress in a notice instead. */
+	private progressNotice: Notice | null = null;
+
+	private hideProgress() {
+		this.progressNotice?.hide();
+		this.progressNotice = null;
 	}
 
 	private dav() {
@@ -206,6 +215,10 @@ export default class RoostSyncPlugin extends Plugin {
 		let failure: string | null = null;
 		let busy = false;
 		let needsSetup = false;
+		if (trigger === "manual" && Platform.isMobile) {
+			this.hideProgress();
+			this.progressNotice = new Notice(L("Roost Sync: syncing…", "Roost Sync：正在同步…"), 0);
+		}
 		if (!dryRun) await this.exchangeSharedSettings(quiet);
 		try {
 			result = await this.buildEngine().sync({ dryRun });
@@ -227,6 +240,7 @@ export default class RoostSyncPlugin extends Plugin {
 			}
 		} finally {
 			this.running = false;
+			this.hideProgress();
 		}
 
 		if (needsSetup && trigger === "manual" && !dryRun) return this.initServer();
@@ -256,6 +270,8 @@ export default class RoostSyncPlugin extends Plugin {
 				s.deleteLocal + s.deleteRemote && L(`deleted ${s.deleteLocal + s.deleteRemote}`, `删除 ${s.deleteLocal + s.deleteRemote}`),
 			].filter(Boolean);
 			new Notice(`Roost Sync: ${parts.join("  ")}`);
+		} else if (trigger === "manual" && Platform.isMobile && !result.errors.length && !result.conflicts.length) {
+			new Notice(L("Roost Sync: up to date.", "Roost Sync：已同步，没有需要更新的内容。"));
 		}
 		const merged = result.actions.filter((a) => a.merged);
 		if (merged.length) {

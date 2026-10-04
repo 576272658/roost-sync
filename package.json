@@ -1,6 +1,6 @@
 {
   "name": "roost-sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Obsidian plugin: sync your vault, settings and plugins with your own WebDAV server.",
   "main": "main.js",
   "private": true,
