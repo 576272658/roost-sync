@@ -24,6 +24,9 @@ export interface RoostSettings {
 	ignorePatterns: string;
 	tombstoneDays: number;
 	archiveDays: number;
+	/** Permanently delete files that have been in the vault's .trash this long. Off by default. */
+	cleanVaultTrash: boolean;
+	vaultTrashDays: number;
 	concurrency: number;
 	language: LanguageSetting;
 	configSync: ConfigSyncOptions;
@@ -49,6 +52,8 @@ export const DEFAULT_SETTINGS: Omit<RoostSettings, "deviceId" | "deviceName" | "
 	ignorePatterns: DEFAULT_IGNORES.join("\n"),
 	tombstoneDays: 90,
 	archiveDays: 30,
+	cleanVaultTrash: false,
+	vaultTrashDays: 30,
 	concurrency: 4,
 	language: "auto",
 	configSync: DEFAULT_CONFIG_SYNC,
@@ -253,6 +258,22 @@ export class RoostSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName(L("Retention", "保留期")).setHeading();
 		num(new Setting(containerEl).setName(L("Deletion records (days)", "删除记录（天）")), () => s.tombstoneDays, (n) => (s.tombstoneDays = n), 7);
 		num(new Setting(containerEl).setName(L("Server trash and conflict archive (days)", "服务器回收站和冲突归档（天）")), () => s.archiveDays, (n) => (s.archiveDays = n), 1);
+		new Setting(containerEl)
+			.setName(L("Empty the vault's .trash automatically", "自动清理库内 .trash"))
+			.setDesc(
+				L(
+					"Obsidian never empties the .trash folder in the vault (the only trash on iPhone, iPad and Android). When on, files that have been there longer than the days below are deleted for good. Age is counted from when Roost Sync first saw the file there, so turning this on never deletes anything right away. The system trash is not touched.",
+					"Obsidian 不会自动清空库里的 .trash 文件夹（手机和平板上删除的文件都在这里）。开启后，在里面放了超过下面天数的文件会被彻底删除。天数从 Roost Sync 第一次在 .trash 里看到这个文件时算起，所以刚开启时不会马上删掉任何东西。不影响系统回收站。",
+				),
+			)
+			.addToggle((t) =>
+				t.setValue(s.cleanVaultTrash).onChange(async (v) => {
+					s.cleanVaultTrash = v;
+					await save();
+					if (v) void this.plugin.cleanVaultTrash(true);
+				}),
+			);
+		num(new Setting(containerEl).setName(L("…after this many days", "……超过这么多天")), () => s.vaultTrashDays, (n) => (s.vaultTrashDays = n), 1);
 
 		new Setting(containerEl).setName(L("Setup and recovery", "初始化与恢复")).setHeading();
 		new Setting(containerEl)

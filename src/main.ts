@@ -10,6 +10,7 @@ import type { ConflictInfo } from "./sync/types";
 import { ConflictModal, InitModal, LogModal, PlanModal, ProbeModal } from "./ui/modals";
 import { randomId } from "./util/hash";
 import { IgnoreRules } from "./util/paths";
+import { cleanVaultTrash } from "./util/trashCleanup";
 import { WebDavClient } from "./webdav/client";
 import { probeServer } from "./webdav/probe";
 
@@ -280,6 +281,32 @@ export default class RoostSyncPlugin extends Plugin {
 		}
 		this.setConflicts(result.conflicts, true, trigger === "manual" || trigger === "conflict");
 		if (!this.conflicts.length) this.setStatus(L(`Roost: synced ${now}`, `Roost：已同步 ${now}`));
+		await this.cleanVaultTrash(false);
+	}
+
+	private lastTrashCleanup = 0;
+
+	/** Optional: empties old files from the vault's .trash, at most every 6 hours unless forced. */
+	async cleanVaultTrash(force: boolean): Promise<void> {
+		if (!this.settings.cleanVaultTrash) return;
+		if (!force && Date.now() - this.lastTrashCleanup < 6 * 3_600_000) return;
+		this.lastTrashCleanup = Date.now();
+		try {
+			const stateDir = normalizePath(`${this.manifest.dir}/state`);
+			if (!(await this.app.vault.adapter.exists(stateDir))) await this.app.vault.adapter.mkdir(stateDir);
+			const seenPath = `${stateDir}/trash-seen.json`;
+			const n = await cleanVaultTrash(this.app.vault.adapter, seenPath, this.settings.vaultTrashDays);
+			if (n > 0) {
+				new Notice(
+					L(
+						`Roost Sync: permanently deleted ${n} file(s) that had been in .trash for over ${this.settings.vaultTrashDays} days.`,
+						`Roost Sync：已彻底删除 .trash 中超过 ${this.settings.vaultTrashDays} 天的 ${n} 个文件。`,
+					),
+				);
+			}
+		} catch (e) {
+			console.error("Roost Sync: .trash cleanup failed", e);
+		}
 	}
 
 	/** Plugins, themes and app settings pulled from other devices load after a restart (§4.3). */

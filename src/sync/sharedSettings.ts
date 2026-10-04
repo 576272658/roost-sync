@@ -18,6 +18,8 @@ export const SHARED_KEYS = [
 	"ignorePatterns",
 	"tombstoneDays",
 	"archiveDays",
+	"cleanVaultTrash",
+	"vaultTrashDays",
 	"configSync",
 ] as const;
 
