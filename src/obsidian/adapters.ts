@@ -1,5 +1,5 @@
 import { Platform, TFile, TFolder, normalizePath as obsNormalize, requestUrl, type App } from "obsidian";
-import type { LocalFs, LocalState, LocalStat, ServerChanges, StateStore } from "../sync/engine";
+import type { BaseTextStore, LocalFs, LocalState, LocalStat, ServerChanges, StateStore } from "../sync/engine";
 import type { PlanSummary } from "../sync/plan";
 
 export interface SyncLogEntry {
@@ -251,6 +251,42 @@ export class FileStateStore implements StateStore {
 		} catch {
 			return [];
 		}
+	}
+}
+
+/** Base texts for merging, one file per content hash in the plugin's state folder. */
+export class FileTextStore implements BaseTextStore {
+	constructor(private app: App, private dir: string) {}
+
+	private p(hash: string) {
+		return obsNormalize(`${this.dir}/${hash}.txt`);
+	}
+
+	async list(): Promise<Set<string>> {
+		const a = this.app.vault.adapter;
+		if (!(await a.exists(this.dir))) return new Set();
+		const { files } = await a.list(this.dir);
+		return new Set(files.map((f) => f.slice(f.lastIndexOf("/") + 1).replace(/\.txt$/, "")));
+	}
+
+	async get(hash: string): Promise<string | null> {
+		const a = this.app.vault.adapter;
+		return (await a.exists(this.p(hash))) ? a.read(this.p(hash)) : null;
+	}
+
+	async put(hash: string, text: string): Promise<void> {
+		const a = this.app.vault.adapter;
+		if (!(await a.exists(this.dir))) {
+			const parent = this.dir.slice(0, this.dir.lastIndexOf("/"));
+			if (parent && !(await a.exists(parent))) await a.mkdir(parent);
+			await a.mkdir(this.dir);
+		}
+		await a.write(this.p(hash), text);
+	}
+
+	async remove(hash: string): Promise<void> {
+		const a = this.app.vault.adapter;
+		if (await a.exists(this.p(hash))) await a.remove(this.p(hash));
 	}
 }
 

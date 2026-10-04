@@ -6,6 +6,7 @@ import type {
 	ConflictResolution,
 	FileMeta,
 	Manifest,
+	ManifestFile,
 } from "./types";
 
 export interface PlanInput {
@@ -26,6 +27,8 @@ export interface PlanInput {
 	isConfig?: (path: string) => boolean;
 	/** Pair deletions and additions with the same content into moves (§5.7). Default true. */
 	detectMoves?: boolean;
+	/** Whether a note changed on both sides can be merged (§5.8): its base text is known. */
+	canMerge?: (path: string, local: FileMeta, remote: ManifestFile, base: BaseEntry) => boolean;
 }
 
 /** Decision table, design doc §5.4. Pure: no I/O. */
@@ -71,7 +74,11 @@ export function planSync(input: PlanInput): Action[] {
 		};
 
 		const res = resolutions[path];
-		if (L && R && res && res.remoteHash === R.hash && L.hash !== R.hash) {
+		if (L && R && res?.choice === "merged" && res.mergedHash && res.remoteHash === R.hash && res.localHash === L.hash) {
+			actions.push({ ...ctx, kind: "merge", reason: say("conflict resolved: merged", "冲突已处理：合并"), mergedHash: res.mergedHash });
+			continue;
+		}
+		if (L && R && res && res.choice !== "merged" && res.remoteHash === R.hash && L.hash !== R.hash) {
 			actions.push(
 				res.choice === "local"
 					? { ...ctx, kind: "push", reason: say("conflict resolved: keep this device", "冲突已处理：保留本机"), archive: "remote" }
@@ -110,7 +117,9 @@ export function planSync(input: PlanInput): Action[] {
 					actions.push(
 						L?.hash === R?.hash
 							? { ...ctx, kind: "markSynced", reason: say("same change on both sides", "两边改成了相同内容") }
-							: conflict(say("changed on both sides", "两边都改了")),
+							: L && R && B && !isConfig(path) && input.canMerge?.(path, L, R, B)
+								? { ...ctx, kind: "merge", reason: say("changed on both sides: merge", "两边都改了：合并") }
+								: conflict(say("changed on both sides", "两边都改了")),
 					);
 					break;
 				case "changed/deleted":
@@ -223,12 +232,14 @@ export interface PlanSummary {
 	markSynced: number;
 	/** Renames/moves (not counted as risky). */
 	move: number;
+	/** Notes changed on both sides, to be merged. */
+	merge: number;
 	/** Deletions + resurrections + new pushes: what the threshold guard counts. */
 	risky: number;
 }
 
 export function summarize(actions: Action[]): PlanSummary {
-	const s: PlanSummary = { push: 0, pushNew: 0, pull: 0, deleteLocal: 0, deleteRemote: 0, resurrect: 0, conflict: 0, ask: 0, markSynced: 0, move: 0, risky: 0 };
+	const s: PlanSummary = { push: 0, pushNew: 0, pull: 0, deleteLocal: 0, deleteRemote: 0, resurrect: 0, conflict: 0, ask: 0, markSynced: 0, move: 0, merge: 0, risky: 0 };
 	for (const a of actions) {
 		switch (a.kind) {
 			case "push":
@@ -244,6 +255,7 @@ export function summarize(actions: Action[]): PlanSummary {
 			case "markSynced": s.markSynced++; break;
 			case "moveRemote":
 			case "moveLocal": s.move++; break;
+			case "merge": s.merge++; break;
 		}
 	}
 	s.risky = s.deleteLocal + s.deleteRemote + s.resurrect + s.pushNew;

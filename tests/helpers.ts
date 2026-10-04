@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SyncEngine, type LocalFs, type LocalState, type LocalStat, type StateStore, type SyncUI, type PlanReview, type InitReview } from "../src/sync/engine";
+import { SyncEngine, type BaseTextStore, type LocalFs, type LocalState, type LocalStat, type StateStore, type SyncUI, type PlanReview, type InitReview } from "../src/sync/engine";
 import { RemoteRepo } from "../src/sync/remote";
 import { WebDavClient } from "../src/webdav/client";
 import type { HttpTransport } from "../src/webdav/transport";
@@ -113,6 +113,22 @@ export class MemStore implements StateStore {
 	}
 }
 
+export class MemTextStore implements BaseTextStore {
+	texts = new Map<string, string>();
+	async list() {
+		return new Set(this.texts.keys());
+	}
+	async get(hash: string) {
+		return this.texts.get(hash) ?? null;
+	}
+	async put(hash: string, text: string) {
+		this.texts.set(hash, text);
+	}
+	async remove(hash: string) {
+		this.texts.delete(hash);
+	}
+}
+
 export class AutoUI implements SyncUI {
 	reviews: PlanReview[] = [];
 	answer: ((r: PlanReview) => Record<string, AskChoice> | null) = () => ({});
@@ -130,6 +146,7 @@ export class AutoUI implements SyncUI {
 export function device(serverUrl: string, folder: string, name: string, opts: { config?: boolean } = {}) {
 	const fs = new MemFs();
 	const store = new MemStore();
+	const texts = new MemTextStore();
 	const ui = new AutoUI();
 	const id = randomId();
 	const dav = new WebDavClient(fetchTransport, serverUrl, folder);
@@ -147,8 +164,8 @@ export function device(serverUrl: string, folder: string, name: string, opts: { 
 		concurrency: 4,
 		alwaysPreview: false,
 		detectServerChanges: true,
-	});
-	return { name, fs, store, ui, engine, dav, remote };
+	}, texts);
+	return { name, fs, store, texts, ui, engine, dav, remote };
 }
 
 /** Node's fetch as a transport (the plugin uses Obsidian's requestUrl). */

@@ -238,3 +238,44 @@ describe("messages follow the language setting", () => {
 		expect(run()).toBe("new here");
 	});
 });
+
+describe("note merging (§5.8)", () => {
+	const input = (extra: Partial<Parameters<typeof planSync>[0]> = {}) => ({
+		local: { "a.md": loc("l") },
+		base: { "a.md": { hash: H("b"), rev: 1 } },
+		manifest: manifest({ "a.md": file("r", 2) }),
+		joinMode: false,
+		skip: () => false,
+		...extra,
+	});
+
+	it("changed on both sides with a known base → merge", () => {
+		const a = planSync(input({ canMerge: () => true }));
+		expect(a.map((x) => x.kind)).toEqual(["merge"]);
+		expect(summarize(a)).toMatchObject({ merge: 1, conflict: 0, risky: 0 });
+	});
+
+	it("without base text → conflict as before", () => {
+		expect(planSync(input({ canMerge: () => false }))[0].kind).toBe("conflict");
+		expect(planSync(input())[0].kind).toBe("conflict");
+	});
+
+	it("config files are never merged", () => {
+		const a = planSync({
+			...input({ canMerge: () => true }),
+			local: { ".obsidian/x.md": loc("l") },
+			base: { ".obsidian/x.md": { hash: H("b"), rev: 1 } },
+			manifest: manifest({ ".obsidian/x.md": file("r", 2) }),
+			isConfig: (p) => p.startsWith(".obsidian/"),
+		});
+		expect(a[0].kind).toBe("pull");
+	});
+
+	it("a merge made in the conflict window is applied while both sides are unchanged", () => {
+		const res = { "a.md": { choice: "merged" as const, remoteHash: H("r"), localHash: H("l"), mergedHash: H("m") } };
+		const a = planSync(input({ resolutions: res }));
+		expect(a[0]).toMatchObject({ kind: "merge", mergedHash: H("m") });
+		const stale = planSync(input({ resolutions: { "a.md": { ...res["a.md"], localHash: H("older") } } }));
+		expect(stale[0].kind).toBe("conflict");
+	});
+});

@@ -86,3 +86,42 @@
 	white-space: pre-wrap;
 	font-size: var(--font-ui-smaller);
 }
+
+.roost-merge:not(:empty) {
+	margin: 6px 0 10px;
+	padding-left: 10px;
+	border-left: 2px solid var(--interactive-accent);
+}
+
+.roost-hunk {
+	margin: 10px 0;
+}
+
+.roost-hunk-title {
+	font-weight: 600;
+}
+
+.roost-hunk-context {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	white-space: pre-wrap;
+	margin: 2px 0;
+}
+
+.roost-hunk .roost-diff-col pre {
+	max-height: 200px;
+}
+
+.roost-merge-result pre {
+	max-height: 320px;
+	overflow: auto;
+	white-space: pre-wrap;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	padding: 6px;
+	border-radius: 4px;
+}
+
+.roost-warn-text {
+	color: var(--text-warning);
+}

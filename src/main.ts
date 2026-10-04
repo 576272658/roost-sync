@@ -2,7 +2,7 @@ import { Notice, Platform, Plugin, TAbstractFile, getLanguage, normalizePath } f
 import { L, setLanguage } from "./i18n";
 import { DEFAULT_CONFIG_SYNC, configDirMayContain, configFileAllowed, needsRestart } from "./sync/config";
 import { pickShared, syncSharedSettings } from "./sync/sharedSettings";
-import { FileStateStore, VaultFs, obsidianTransport, platformName } from "./obsidian/adapters";
+import { FileStateStore, FileTextStore, VaultFs, obsidianTransport, platformName } from "./obsidian/adapters";
 import { DEFAULT_SETTINGS, RoostSettingTab, type RoostSettings } from "./settings";
 import { AlreadyInitializedError, NotInitializedError, SyncEngine, type SyncResult, type SyncUI } from "./sync/engine";
 import { LockBusyError, RemoteRepo } from "./sync/remote";
@@ -188,7 +188,7 @@ export default class RoostSyncPlugin extends Plugin {
 			concurrency: s.concurrency,
 			alwaysPreview: s.alwaysPreview,
 			detectServerChanges: s.detectServerChanges,
-		});
+		}, new FileTextStore(this.app, normalizePath(`${this.manifest.dir}/state/base-text`)));
 	}
 
 	async sync(trigger: Trigger, dryRun = false): Promise<void> {
@@ -246,15 +246,26 @@ export default class RoostSyncPlugin extends Plugin {
 		}
 
 		const s = result.summary;
-		const changed = s.push + s.pull + s.deleteLocal + s.deleteRemote + s.move;
+		const changed = s.push + s.pull + s.deleteLocal + s.deleteRemote + s.move + s.merge;
 		if (changed > 0 && !quiet) {
 			const parts = [
 				s.push && `↑${s.push}`,
 				s.pull && `↓${s.pull}`,
 				s.move && L(`moved ${s.move}`, `移动 ${s.move}`),
+				s.merge && L(`merged ${s.merge}`, `合并 ${s.merge}`),
 				s.deleteLocal + s.deleteRemote && L(`deleted ${s.deleteLocal + s.deleteRemote}`, `删除 ${s.deleteLocal + s.deleteRemote}`),
 			].filter(Boolean);
 			new Notice(`Roost Sync: ${parts.join("  ")}`);
+		}
+		const merged = result.actions.filter((a) => a.merged);
+		if (merged.length) {
+			new Notice(
+				L(
+					`Roost Sync: merged ${merged.length} note(s) edited on two devices. Both original versions are in the server's .sync/conflicts/:\n`,
+					`Roost Sync：${merged.length} 篇笔记在两台设备上都改过，已自动合并。合并前的两个版本在服务器 .sync/conflicts/：\n`,
+				) + merged.slice(0, 5).map((a) => a.path).join("\n"),
+				12_000,
+			);
 		}
 		const auto = result.actions.filter((a) => a.autoResolved);
 		if (auto.length) {
@@ -349,8 +360,9 @@ export default class RoostSyncPlugin extends Plugin {
 				local: await engine.readLocal(c.path).catch(() => null),
 				remote: await engine.readRemote(c.path).catch(() => null),
 			}),
-			async (res) => {
-				await engine.saveResolutions(res);
+			(c) => engine.loadMergeInputs(c).catch(() => null),
+			async (res, mergedTexts) => {
+				await engine.saveResolutions(res, mergedTexts);
 				await this.sync("conflict");
 			},
 		).open();
@@ -400,7 +412,7 @@ export default class RoostSyncPlugin extends Plugin {
 
 	private async log(trigger: string, status: string, r: SyncResult | null, errors: string[] = []) {
 		const changes = (r?.actions ?? [])
-			.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind))
+			.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind) || a.merged)
 			.slice(0, 200)
 			.map((a) => `${a.kind} ${a.from ? `${a.from} → ` : ""}${a.path} (${a.reason})`);
 		await this.stateStore

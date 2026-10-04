@@ -79,12 +79,19 @@ export interface ConflictInfo {
 	remoteBy: string;
 	hasBase: boolean;
 	detectedAt: number;
+	/** A note whose automatic merge hit overlapping edits: it can be merged hunk by hunk. */
+	mergeable?: boolean;
+	/** Base hash for merging. */
+	baseHash?: string;
 }
 
 export interface ConflictResolution {
-	choice: "local" | "remote";
+	choice: "local" | "remote" | "merged";
 	/** Server hash the choice was made against; if the server moved on, ask again. */
 	remoteHash: string;
+	/** "merged": local hash it was made against, and the merged text's hash (kept in the base text store). */
+	localHash?: string;
+	mergedHash?: string;
 }
 
 export type ActionKind =
@@ -99,7 +106,9 @@ export type ActionKind =
 	/** Rename on the server (renamed on this device). */
 	| "moveRemote"
 	/** Rename on this device (renamed elsewhere). */
-	| "moveLocal";
+	| "moveLocal"
+	/** A note changed on both sides: three-way merge, or apply a merge the user made. */
+	| "merge";
 
 export interface Action {
 	path: string;
@@ -122,4 +131,10 @@ export interface Action {
 	defaultChoice?: AskChoice;
 	/** A config-file conflict resolved without asking (newer wins). */
 	autoResolved?: boolean;
+	/** merge: apply this merged text (from the conflict window) instead of merging automatically. */
+	mergedHash?: string;
+	/** Set by the engine: the merge was applied. */
+	merged?: boolean;
+	/** Set by the engine: the automatic merge found overlapping edits (now a conflict). */
+	mergeable?: boolean;
 }

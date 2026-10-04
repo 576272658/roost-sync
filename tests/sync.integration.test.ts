@@ -113,6 +113,78 @@ describe.skipIf(!hasUvx)("sync against WsgiDAV 4.3.3", () => {
 		expect(archived.map((e) => e.path.split("/").slice(3).join("/"))).toEqual(["notes/a.md"]);
 	});
 
+	it("notes edited in different paragraphs on two devices are merged", async () => {
+		const { mac, phone } = await setup();
+		const base = "# Note\n\nfirst paragraph\n\nsecond paragraph\n\nthird paragraph\n";
+		mac.fs.set("notes/m.md", base);
+		await mac.engine.sync();
+		await phone.engine.sync();
+		mac.fs.set("notes/m.md", base.replace("first paragraph", "first paragraph, edited on mac"));
+		await mac.engine.sync();
+		phone.fs.set("notes/m.md", base.replace("third paragraph", "third paragraph, edited on phone"));
+		const r = await phone.engine.sync();
+		const merged = "# Note\n\nfirst paragraph, edited on mac\n\nsecond paragraph\n\nthird paragraph, edited on phone\n";
+		expect(r.conflicts).toHaveLength(0);
+		expect(r.actions.filter((a) => a.merged).map((a) => a.path)).toEqual(["notes/m.md"]);
+		expect(phone.fs.text("notes/m.md")).toBe(merged);
+		expect(await phone.dav.getText("notes/m.md")).toBe(merged);
+		const archived = (await phone.dav.walk(".sync/conflicts")).map((e) => e.path.split("/").slice(3).join("/")).sort();
+		expect(archived).toEqual(["notes/m (mac).md", "notes/m (phone).md"]);
+
+		const r2 = await mac.engine.sync();
+		expect(r2.conflicts).toHaveLength(0);
+		expect(mac.fs.text("notes/m.md")).toBe(merged);
+		// The merged text is the new base: the next concurrent edits merge again.
+		mac.fs.set("notes/m.md", merged.replace("second paragraph", "second paragraph (mac)"));
+		await mac.engine.sync();
+		phone.fs.set("notes/m.md", merged + "\nappended on phone\n");
+		const r3 = await phone.engine.sync();
+		expect(r3.conflicts).toHaveLength(0);
+		expect(phone.fs.text("notes/m.md")).toBe(merged.replace("second paragraph", "second paragraph (mac)") + "\nappended on phone\n");
+	});
+
+	it("overlapping edits become a conflict that can be merged section by section", async () => {
+		const { mac, phone } = await setup();
+		const base = "intro\n\nshared line\n\noutro\n";
+		mac.fs.set("notes/m.md", base);
+		await mac.engine.sync();
+		await phone.engine.sync();
+		mac.fs.set("notes/m.md", base.replace("shared line", "mac line").replace("outro", "outro (mac)"));
+		await mac.engine.sync();
+		phone.fs.set("notes/m.md", base.replace("shared line", "phone line"));
+		const r = await phone.engine.sync();
+		expect(r.conflicts.map((c) => [c.path, c.mergeable])).toEqual([["notes/m.md", true]]);
+		expect(phone.fs.text("notes/m.md")).toBe(base.replace("shared line", "phone line"));
+
+		// A second sync does not retry the merge (no server work for it).
+		const again = await phone.engine.sync();
+		expect(again.conflicts.map((c) => c.path)).toEqual(["notes/m.md"]);
+
+		const c = again.conflicts[0];
+		const inputs = await phone.engine.loadMergeInputs(c);
+		expect(inputs?.base).toBe(base);
+		const { assemble, mergeText } = await import("../src/sync/merge");
+		const text = assemble(mergeText(inputs!.local, inputs!.base, inputs!.remote), ["remoteFirst"]);
+		await phone.engine.saveResolutions({ "notes/m.md": { choice: "merged", remoteHash: c.remoteHash, localHash: c.localHash } }, { "notes/m.md": text });
+		const r2 = await phone.engine.sync();
+		expect(r2.conflicts).toHaveLength(0);
+		const expected = "intro\n\nmac line\nphone line\n\noutro (mac)\n";
+		expect(phone.fs.text("notes/m.md")).toBe(expected);
+		await mac.engine.sync();
+		expect(mac.fs.text("notes/m.md")).toBe(expected);
+	});
+
+	it("notes synced before the upgrade get a base text, and unused texts are dropped", async () => {
+		const { mac, phone } = await setup();
+		phone.texts.texts.clear();
+		await phone.engine.sync();
+		expect(phone.texts.texts.size).toBe(3); // a.md, b.md, 笔记.md
+		mac.fs.remove("notes/b.md");
+		await mac.engine.sync();
+		await phone.engine.sync();
+		expect(phone.texts.texts.size).toBe(2);
+	});
+
 	it("same edit on both sides is not a conflict", async () => {
 		const { mac, phone } = await setup();
 		mac.fs.set("notes/a.md", "same");

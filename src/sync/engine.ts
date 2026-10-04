@@ -15,9 +15,11 @@ import type {
 	DeviceRecord,
 	FileMeta,
 	Manifest,
+	ManifestFile,
 } from "./types";
 import { SERVER_DIRECT } from "./types";
 import { isConfigPath } from "./config";
+import { MERGE_MAX_BYTES, assemble, conflictCount, decodeText, encodeText, isMergeable, mergeText } from "./merge";
 
 // ---------- ports ----------
 
@@ -63,6 +65,18 @@ export interface LocalState {
 export interface StateStore {
 	load(): Promise<LocalState | null>;
 	save(state: LocalState): Promise<void>;
+}
+
+/**
+ * Text of each note as of its last sync, keyed by content hash: the common ancestor
+ * for three-way merges (§5.8). Kept only on this device; losing it just means
+ * conflicts fall back to choosing one version.
+ */
+export interface BaseTextStore {
+	list(): Promise<Set<string>>;
+	get(hash: string): Promise<string | null>;
+	put(hash: string, text: string): Promise<void>;
+	remove(hash: string): Promise<void>;
 }
 
 export interface PlanReview {
@@ -185,7 +199,29 @@ export class SyncEngine {
 		private remote: RemoteRepo,
 		private ui: SyncUI,
 		private settings: SyncSettings,
+		private texts: BaseTextStore | null = null,
 	) {}
+
+	/** Hashes present in the base text store. */
+	private textIndex = new Set<string>();
+
+	private async loadTextIndex() {
+		this.textIndex = this.texts ? await this.texts.list().catch(() => new Set<string>()) : new Set<string>();
+	}
+
+	private async putText(hash: string, text: string) {
+		if (!this.texts || this.textIndex.has(hash)) return;
+		await this.texts.put(hash, text);
+		this.textIndex.add(hash);
+	}
+
+	private canMerge(state: LocalState, path: string, local: FileMeta, remote: ManifestFile, base: BaseEntry): boolean {
+		if (!this.texts || !isMergeable(path) || !this.textIndex.has(base.hash)) return false;
+		if (local.size > MERGE_MAX_BYTES || remote.size > MERGE_MAX_BYTES) return false;
+		// Already tried and found overlapping edits: wait for the user instead of retrying every sync.
+		const c = state.conflicts[path];
+		return !(c?.mergeable && c.localHash === local.hash && c.remoteHash === remote.hash);
+	}
 
 	private get dav() {
 		return this.remote.dav;
@@ -296,6 +332,7 @@ export class SyncEngine {
 			decisions,
 			resolutions: state.resolutions,
 			isConfig: isConfigPath,
+			canMerge: (p, l, r, b) => this.canMerge(state, p, l, r, b),
 		});
 	}
 
@@ -321,6 +358,7 @@ export class SyncEngine {
 			state.joined = false;
 		}
 		const joinMode = this.isJoinMode(state, manifest);
+		await this.loadTextIndex();
 
 		const recErrors: string[] = [];
 		let rec = await this.reconcile(manifest, recErrors);
@@ -352,6 +390,7 @@ export class SyncEngine {
 		if (!needsServer) {
 			// Nothing to transfer: update local bookkeeping without taking the lock.
 			this.applyBookkeeping(state, actions, manifest);
+			await this.captureBaseTexts(state, scan);
 			if (fetched.etag) state.manifestCache = { etag: fetched.etag, manifest };
 			state.joined = true;
 			state.serverId = manifest.id;
@@ -420,8 +459,9 @@ export class SyncEngine {
 			if (a.kind === "markSynced" && a.remote) state.base[a.path] = { hash: a.remote.hash, rev: a.remote.rev };
 			else if (a.kind === "dropBase") delete state.base[a.path];
 			else if (a.kind === "conflict" && a.local && a.remote) {
-				conflicts[a.path] = state.conflicts[a.path]?.remoteHash === a.remote.hash && state.conflicts[a.path]?.localHash === a.local.hash
-					? state.conflicts[a.path]
+				const prev = state.conflicts[a.path];
+				conflicts[a.path] = prev?.remoteHash === a.remote.hash && prev?.localHash === a.local.hash
+					? { ...prev, mergeable: prev.mergeable || a.mergeable, baseHash: prev.baseHash ?? a.base?.hash }
 					: {
 							path: a.path,
 							localHash: a.local.hash,
@@ -433,6 +473,8 @@ export class SyncEngine {
 							remoteBy: a.remote.by,
 							hasBase: !!a.base,
 							detectedAt: Date.now(),
+							mergeable: a.mergeable,
+							baseHash: a.base?.hash,
 						};
 			}
 		}
@@ -488,7 +530,7 @@ export class SyncEngine {
 		const touchedLocalDirs = new Set<string>();
 		const touchedRemoteDirs = new Set<string>();
 		let done = 0;
-		const total = actions.filter((a) => ["push", "pull", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind)).length;
+		const total = actions.filter((a) => ["push", "pull", "merge", "deleteLocal", "deleteRemote", "moveLocal", "moveRemote"].includes(a.kind)).length;
 		const tick = () => ui.progress(L(`Syncing… ${++done}/${total}`, `同步中… ${++done}/${total}`));
 
 		for (const a of localDeletes) {
@@ -571,7 +613,7 @@ export class SyncEngine {
 		}
 
 		// 2. Transfers.
-		const transfers = actions.filter((a) => a.kind === "push" || a.kind === "pull");
+		const transfers = actions.filter((a) => a.kind === "push" || a.kind === "pull" || a.kind === "merge");
 		const dirs = new Set(transfers.filter((a) => a.kind === "push").map((a) => parentOf(a.path)).filter(Boolean));
 		for (const d of [...dirs].sort((x, y) => x.split("/").length - y.split("/").length)) {
 			try {
@@ -583,7 +625,15 @@ export class SyncEngine {
 		await runPool(transfers, concurrency, async (a) => {
 			try {
 				if (a.kind === "push") await this.doPush(a, localPath(a.path), next, base, state, newRev, stamp);
-				else {
+				else if (a.kind === "merge") {
+					if (!(await unchangedSinceScan(a))) {
+						errors.push(L(`${a.path}: edited during sync; not merged (will retry next sync)`, `${a.path}：同步期间被修改，未合并（下次同步再处理）`));
+						return;
+					}
+					await this.doMerge(a, localPath(a.path), next, base, state, newRev, stamp);
+					if (a.merged) dirty = true;
+					return;
+				} else {
 					if (!(await unchangedSinceScan(a))) {
 						errors.push(L(`${a.path}: edited during sync; not overwritten (will retry next sync)`, `${a.path}：同步期间被修改，未覆盖（下次同步再处理）`));
 						return;
@@ -607,6 +657,7 @@ export class SyncEngine {
 		state.base = base;
 		state.serverId = manifest.id;
 		this.applyBookkeeping(state, actions, manifest);
+		await this.captureBaseTexts(state, scan);
 		for (const d of sortDeepestFirst(touchedLocalDirs)) await this.removeEmptyLocalDirs(d);
 		for (const d of sortDeepestFirst(touchedRemoteDirs)) await this.removeEmptyRemoteDirs(d).catch(() => {});
 
@@ -660,6 +711,7 @@ export class SyncEngine {
 		if (r.status !== "ok") throw new PreconditionFailedError("PUT", a.path);
 		const mtime = st?.mtime ?? a.local?.mtime ?? Date.now();
 		next.files[a.path] = { hash, size: data.byteLength, mtime, rev: newRev, by: this.settings.device.name, etag: r.etag };
+		await this.keepText(a.path, hash, data);
 		delete next.tombstones[a.path];
 		base[a.path] = { hash, rev: newRev };
 		if (st) state.hashCache[a.path] = { mtime: st.mtime, size: st.size, hash };
@@ -676,6 +728,7 @@ export class SyncEngine {
 		}
 		const st = await this.fs.write(lp, data, R.mtime || undefined);
 		state.hashCache[a.path] = { mtime: st.mtime, size: st.size, hash };
+		await this.keepText(a.path, hash, data);
 		if (hash === R.hash) {
 			base[a.path] = { hash, rev: R.rev };
 			if (got.etag && got.etag !== R.etag) next.files[a.path] = { ...R, etag: got.etag };
@@ -684,6 +737,96 @@ export class SyncEngine {
 			// or a crashed upload). The file is the truth; fix the manifest.
 			next.files[a.path] = { hash, size: data.byteLength, mtime: R.mtime, rev: newRev, by: SERVER_DIRECT, etag: got.etag };
 			base[a.path] = { hash, rev: newRev };
+		}
+	}
+
+	/** Remembers a synced note's text as the base for future merges. */
+	private async keepText(path: string, hash: string, data: ArrayBuffer) {
+		if (!this.texts || !isMergeable(path) || data.byteLength > MERGE_MAX_BYTES) return;
+		const text = decodeText(data);
+		if (text !== null) await this.putText(hash, text).catch(() => {});
+	}
+
+	/**
+	 * Three-way merge of a note changed on both sides (§5.8). Clean merges are written to
+	 * both sides, with both original versions archived in .sync/conflicts/. Overlapping
+	 * edits turn the action into a conflict the user merges hunk by hunk.
+	 */
+	private async doMerge(a: Action, lp: string, next: Manifest, base: Record<string, BaseEntry>, state: LocalState, newRev: number, stamp: string) {
+		const R = a.remote!;
+		const localData = await this.fs.read(lp);
+		const got = await this.dav.get(a.path);
+		if (got.status !== 200) throw new Error(L("listed in the manifest but missing on the server", "清单里有，但服务器上找不到这个文件"));
+		const remoteData = got.data!;
+		if ((await sha256(remoteData)) !== R.hash) throw new PreconditionFailedError("GET", a.path);
+
+		let merged: string | null = null;
+		if (a.mergedHash) {
+			merged = (await this.texts?.get(a.mergedHash)) ?? null;
+			if (merged === null) delete state.resolutions[a.path]; // lost: ask again
+		} else {
+			const lt = decodeText(localData);
+			const rt = decodeText(remoteData);
+			const bt = a.base ? ((await this.texts?.get(a.base.hash)) ?? null) : null;
+			if (lt !== null && rt !== null && bt !== null) {
+				const chunks = mergeText(lt, bt, rt);
+				if (conflictCount(chunks) === 0) merged = assemble(chunks);
+				else a.mergeable = true;
+			}
+		}
+		if (merged === null) {
+			a.kind = "conflict";
+			a.mergeable = a.mergeable || !!a.mergedHash;
+			return;
+		}
+
+		const data = encodeText(merged);
+		const hash = await sha256(data);
+		const me = this.settings.device.name;
+		const theirs = R.by === SERVER_DIRECT ? "server" : R.by === me ? `${R.by}, server` : R.by;
+		await this.remote.archiveLocalVersion(a.path, stamp, localData, me);
+		await this.remote.archiveLocalVersion(a.path, stamp, remoteData, theirs);
+		const r = await this.dav.putEx(a.path, data, got.etag ? { ifMatch: got.etag } : {});
+		if (r.status !== "ok") throw new PreconditionFailedError("PUT", a.path);
+		const st = await this.fs.write(lp, data);
+		next.files[a.path] = { hash, size: data.byteLength, mtime: st.mtime, rev: newRev, by: me, etag: r.etag };
+		delete next.tombstones[a.path];
+		base[a.path] = { hash, rev: newRev };
+		state.hashCache[a.path] = { mtime: st.mtime, size: st.size, hash };
+		await this.putText(hash, merged).catch(() => {});
+		a.merged = true;
+		delete state.conflicts[a.path];
+		delete state.resolutions[a.path];
+	}
+
+	/**
+	 * Keeps the base text of every synced note (reading notes still unchanged since their
+	 * last sync, e.g. after upgrading) and drops texts nothing refers to any more.
+	 */
+	private async captureBaseTexts(state: LocalState, scan: Scan) {
+		const texts = this.texts;
+		if (!texts) return;
+		const want = new Set<string>();
+		const todo: { path: string; hash: string }[] = [];
+		for (const [p, b] of Object.entries(state.base)) {
+			if (!isMergeable(p)) continue;
+			want.add(b.hash);
+			const c = state.hashCache[p];
+			if (!this.textIndex.has(b.hash) && c && c.hash === b.hash && c.size <= MERGE_MAX_BYTES) todo.push({ path: p, hash: b.hash });
+		}
+		for (const r of Object.values(state.resolutions)) if (r.mergedHash) want.add(r.mergedHash);
+		await runPool(todo, this.settings.concurrency, async ({ path, hash }) => {
+			try {
+				const data = await this.fs.read(scan.actual[path] ?? path);
+				if ((await sha256(data)) === hash) await this.keepText(path, hash, data);
+			} catch {
+				/* next time */
+			}
+		});
+		for (const h of [...this.textIndex]) {
+			if (want.has(h)) continue;
+			await texts.remove(h).catch(() => {});
+			this.textIndex.delete(h);
 		}
 	}
 
@@ -851,7 +994,15 @@ export class SyncEngine {
 		return Object.values((await this.loadState()).conflicts);
 	}
 
-	async saveResolutions(res: Record<string, ConflictResolution>): Promise<void> {
+	/** `mergedTexts`: results of hunk-by-hunk merges in the conflict window, by path. */
+	async saveResolutions(res: Record<string, ConflictResolution>, mergedTexts: Record<string, string> = {}): Promise<void> {
+		await this.loadTextIndex();
+		for (const [p, text] of Object.entries(mergedTexts)) {
+			if (!res[p]) continue;
+			const hash = await sha256(encodeText(text));
+			await this.putText(hash, text);
+			res[p] = { ...res[p], choice: "merged", mergedHash: hash };
+		}
 		const state = await this.loadState();
 		state.resolutions = { ...state.resolutions, ...res };
 		await this.store.save(state);
@@ -859,6 +1010,18 @@ export class SyncEngine {
 
 	async readLocal(path: string): Promise<ArrayBuffer> {
 		return this.fs.read(path);
+	}
+
+	/** The three versions of a conflicting note, for merging in the conflict window. */
+	async loadMergeInputs(c: ConflictInfo): Promise<{ local: string; base: string; remote: string } | null> {
+		if (!this.texts || !c.baseHash) return null;
+		const [l, b, r] = await Promise.all([this.fs.read(c.path).catch(() => null), this.texts.get(c.baseHash), this.readRemote(c.path)]);
+		if (!l || !r || b === null) return null;
+		const local = decodeText(l);
+		const remote = decodeText(r);
+		if (local === null || remote === null) return null;
+		if ((await sha256(l)) !== c.localHash || (await sha256(r)) !== c.remoteHash) return null; // changed since; sync again
+		return { local, base: b, remote };
 	}
 
 	async readRemote(path: string): Promise<ArrayBuffer | null> {
