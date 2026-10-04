@@ -1,5 +1,5 @@
 import { L } from "../i18n";
-import { configDirMayContain, configFileAllowed, isConfigPath, type ConfigSyncOptions } from "../sync/config";
+import { CONFIG_DIR, configDirMayContain, configFileAllowed, isConfigPath, type ConfigSyncOptions } from "../sync/config";
 export const DEFAULT_IGNORES = [
 	".DS_Store",
 	"Thumbs.db",
@@ -8,7 +8,7 @@ export const DEFAULT_IGNORES = [
 	"~$*",
 	"_remotely-save-metadata-on-remote.*",
 	// Being replaced by Roost Sync; its settings hold its own server credentials.
-	".obsidian/plugins/remotely-save/",
+	`${CONFIG_DIR}/plugins/remotely-save/`,
 ];
 
 export function normalizePath(p: string): string {
